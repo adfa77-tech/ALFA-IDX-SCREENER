@@ -1,0 +1,2 @@
+[tool.vercel]
+entrypoint = "react_server:web"

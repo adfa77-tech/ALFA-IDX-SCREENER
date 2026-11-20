@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="id" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ALPHA IDX • IHSG & ISSI Screener</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    body { background: #070b14; color: #e2e8f0; font-family: 'Plus Jakarta Sans', sans-serif; }
+    .font-mono { font-family: 'JetBrains Mono', monospace; }
+    .glass { background: rgba(15, 23, 42, 0.82); backdrop-filter: blur(14px); border: 1px solid rgba(148, 163, 184, 0.14); }
+    ::-webkit-scrollbar { width: 7px; height: 7px; }
+    ::-webkit-scrollbar-track { background: #0b1120; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 99px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useRef } = React;
+    const fmtRp = (n) => (n != null ? "Rp " + Number(n).toLocaleString("id-ID") : "-");
+
+    function TickerTape() {
+      const ref = useRef(null);
+      useEffect(() => {
+        const host = ref.current;
+        if (!host || host.childElementCount > 0) return;
+        const wrap = document.createElement("div");
+        wrap.className = "tradingview-widget-container";
+        const w = document.createElement("div");
+        w.className = "tradingview-widget-container__widget";
+        wrap.appendChild(w);
+        const s = document.createElement("script");
+        s.src = "https://s3.tradingview.com/external-embedding/embed-widget-ticker-tape.js";
+        s.async = true;
+        s.text = JSON.stringify({
+          symbols: [
+            { description: "IHSG", proName: "IDX:COMPOSITE" },
+            { description: "BRIS", proName: "IDX:BRIS" },
+            { description: "TLKM", proName: "IDX:TLKM" },
+            { description: "ADRO", proName: "IDX:ADRO" },
+            { description: "AMMN", proName: "IDX:AMMN" },
+            { description: "ANTM", proName: "IDX:ANTM" },
+            { description: "ASII", proName: "IDX:ASII" },
+            { description: "ICBP", proName: "IDX:ICBP" },
+            { description: "PGEO", proName: "IDX:PGEO" },
+          ],
+          showSymbolLogo: true,
+          isTransparent: true,
+          displayMode: "adaptive",
+          colorTheme: "dark",
+          locale: "id",
+        });
+        wrap.appendChild(s);
+        host.appendChild(wrap);
+      }, []);
+      return <div ref={ref} className="w-full bg-slate-950 border-b border-slate-800/80" />;
+    }
+
+    function TradingViewChart({ ticker, interval, expanded }) {
+      const ref = useRef(null);
+      useEffect(() => {
+        if (!ticker || !ref.current) return;
+        let timer = null;
+        const mount = () => {
+          if (!ref.current) return;
+          if (typeof TradingView !== "undefined") {
+            ref.current.innerHTML = "";
+            new TradingView.widget({
+              autosize: true,
+              symbol: "IDX:" + ticker,
+              interval: interval,
+              timezone: "Asia/Jakarta",
+              theme: "dark",
+              style: "1",
+              locale: "id",
+              toolbar_bg: "#0f172a",
+              enable_publishing: false,
+              allow_symbol_change: true,
+              studies: [
+                { id: "MASimple@tv-basicstudies", inputs: { length: 20 } },
+                { id: "MASimple@tv-basicstudies", inputs: { length: 50 } },
+                "RSI@tv-basicstudies",
+                "MACD@tv-basicstudies",
+              ],
+              container_id: "tv_react_chart",
+            });
+          } else {
+            timer = setTimeout(mount, 250);
+          }
+        };
+        mount();
+        return () => timer && clearTimeout(timer);
+      }, [ticker, interval, expanded]);
+
+      return <div id="tv_react_chart" ref={ref} style={{ height: expanded ? "620px" : "460px" }} className="w-full bg-slate-950" />;
+    }
+
+    function TradingViewGauge({ ticker }) {
+      const ref = useRef(null);
+      useEffect(() => {
+        if (!ticker || !ref.current) return;
+        ref.current.innerHTML = "";
+        const wrap = document.createElement("div");
+        wrap.className = "tradingview-widget-container";
+        wrap.style.height = "100%";
+        wrap.style.width = "100%";
+        const w = document.createElement("div");
+        w.className = "tradingview-widget-container__widget";
+        wrap.appendChild(w);
+        const s = document.createElement("script");
+        s.src = "https://s3.tradingview.com/external-embedding/embed-widget-technical-analysis.js";
+        s.async = true;
+        s.text = JSON.stringify({
+          interval: "1D",
+          width: "100%",
+          isTransparent: true,
+          height: "100%",
+          symbol: "IDX:" + ticker,
+          showIntervalTabs: true,
+          displayMode: "multiple",
+          locale: "id",
+          colorTheme: "dark",
+        });
+        wrap.appendChild(s);
+        ref.current.appendChild(wrap);
+      }, [ticker]);
+
+      return <div ref={ref} className="w-full h-[380px] bg-slate-950" />;
+    }
+
+    function App() {
+      const [meta, setMeta] = useState({ updated_at: "-", total_scanned: 0, total_issi: 0, strong_buy_count: 0 });
+      const [stocks, setStocks] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [error, setError] = useState("");
+      const [preset, setPreset] = useState("ALL");
+      const [onlyIssi, setOnlyIssi] = useState(true);
+      const [minVal, setMinVal] = useState(1);
+      const [search, setSearch] = useState("");
+      const [sortKey, setSortKey] = useState("alpha_score");
+      const [sortAsc, setSortAsc] = useState(false);
+      const [selectedTicker, setSelectedTicker] = useState(null);
+      const [interval, setIntervalTv] = useState("D");
+      const [expanded, setExpanded] = useState(false);
+      const [capital, setCapital] = useState(20000000);
+      const [riskPct, setRiskPct] = useState(2);
+      const [showIssiModal, setShowIssiModal] = useState(false);
+      const [issiText, setIssiText] = useState("");
+      const [watchlist, setWatchlist] = useState(() => {
+        try { return JSON.parse(localStorage.getItem("alpha_idx_watchlist") || "[]"); }
+        catch { return []; }
+      });
+
+      const fetchScan = async (force = false) => {
+        setLoading(true);
+        setError("");
+        try {
+          const res = await fetch("/api/scan" + (force ? "?force=1" : ""));
+          const data = await res.json();
+          if (data.error) throw new Error(data.error);
+          setMeta({
+            updated_at: data.updated_at,
+            total_scanned: data.total_scanned,
+            total_issi: data.total_issi,
+            strong_buy_count: data.strong_buy_count,
+          });
+          setStocks(data.stocks || []);
+        } catch (e) {
+          setError(e.message);
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      useEffect(() => {
+        fetchScan(false);
+        const id = setInterval(() => fetchScan(false), 60000);
+        return () => clearInterval(id);
+      }, []);
+
+      const openIssiModal = async () => {
+        setShowIssiModal(true);
+        try {
+          const res = await fetch("/api/issi");
+          const d = await res.json();
+          setIssiText((d.tickers || []).join("\n"));
+        } catch {}
+      };
+
+      const saveIssiList = async () => {
+        const res = await fetch("/api/issi", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: issiText }),
+        });
+        const d = await res.json();
+        if (d.error) { alert(d.error); return; }
+        setShowIssiModal(false);
+        fetchScan(true);
+      };
+
+      const toggleWatchlist = (e, ticker) => {
+        e.stopPropagation();
+        const next = watchlist.includes(ticker) ? watchlist.filter((t) => t !== ticker) : [...watchlist, ticker];
+        setWatchlist(next);
+        localStorage.setItem("alpha_idx_watchlist", JSON.stringify(next));
+      };
+
+      const filtered = useMemo(() => {
+        const q = search.trim().toUpperCase();
+        const list = stocks.filter((s) => {
+          if (onlyIssi && !s.is_issi) return false;
+          if (s.value_traded_b < minVal) return false;
+          if (q && !s.ticker.includes(q) && !s.name.toUpperCase().includes(q)) return false;
+          if (preset === "WATCHLIST") return watchlist.includes(s.ticker);
+          if (preset === "SNIPER") return s.alpha_score >= 70;
+          if (preset === "BANDAR") return s.rvol >= 1.35 && s.vwma_bull && s.pillars.smart_money >= 16;
+          if (preset === "BREAKOUT") return s.is_breakout || (s.is_squeeze && s.alpha_score >= 60);
+          if (preset === "VALUE") return s.pe != null && s.pe > 0 && s.pe <= 18 && (s.roe == null || s.roe >= 10) && s.alpha_score >= 55;
+          if (preset === "REBOUND") return s.is_rebound || (s.rsi <= 42 && s.macd_bull);
+          return true;
+        });
+
+        return [...list].sort((a, b) => {
+          let va = a[sortKey], vb = b[sortKey];
+          if (typeof va === "string") return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+          va = va ?? -999999; vb = vb ?? -999999;
+          return sortAsc ? va - vb : vb - va;
+        });
+      }, [stocks, onlyIssi, minVal, search, preset, watchlist, sortKey, sortAsc]);
+
+      const selected = useMemo(() => filtered.find((s) => s.ticker === selectedTicker) || filtered[0] || null, [filtered, selectedTicker]);
+
+      const topAlerts = useMemo(() => {
+        return stocks.filter((s) => (!onlyIssi || s.is_issi) && (s.signal_code === "STRONG_BUY" || s.signal_code === "BUY_BREAKOUT")).slice(0, 6);
+      }, [stocks, onlyIssi]);
+
+      const handleSort = (key) => {
+        if (sortKey === key) setSortAsc(!sortAsc);
+        else { setSortKey(key); setSortAsc(key === "ticker"); }
+      };
+
+      const exportCsv = () => {
+        const header = "Ticker,ISSI,Close,Change%,AlphaScore,Signal,EntryLow,EntryHigh,SL,TP1,TP2,RR,RVOL,RSI,ValMiliar\n";
+        const body = filtered.map((s) =>
+          [s.ticker, s.is_issi, s.close, s.change, s.alpha_score, `"${s.signal}"`, s.plan.entry_low, s.plan.entry_high, s.plan.stop_loss, s.plan.tp1, s.plan.tp2, s.plan.rr, s.rvol, s.rsi, s.value_traded_b].join(",")
+        ).join("\n");
+        const blob = new Blob([header + body], { type: "text/csv;charset=utf-8;" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "alpha_idx_screener.csv";
+        a.click();
+      };
+
+      const sigBadge = (code) => {
+        if (code === "STRONG_BUY") return "bg-emerald-500/20 text-emerald-300 border-emerald-500/40";
+        if (code === "BUY_BREAKOUT") return "bg-cyan-500/20 text-cyan-300 border-cyan-500/40";
+        if (code === "BOW") return "bg-sky-500/20 text-sky-300 border-sky-500/40";
+        if (code === "SELL") return "bg-amber-500/20 text-amber-300 border-amber-500/40";
+        if (code === "AVOID") return "bg-rose-500/20 text-rose-300 border-rose-500/40";
+        return "bg-slate-700/50 text-slate-300 border-slate-600/40";
+      };
+
+      const posCalc = useMemo(() => {
+        if (!selected) return null;
+        const entry = selected.plan.entry_high;
+        const sl = selected.plan.stop_loss;
+        const tp1 = selected.plan.tp1;
+        const rps = Math.max(1, entry - sl);
+        const lots = Math.max(0, Math.min(Math.floor((capital * (riskPct / 100)) / (rps * 100)), Math.floor(capital / (entry * 100))));
+        return { lots, val: lots * 100 * entry, profit: lots * 100 * (tp1 - entry), loss: lots * 100 * rps };
+      }, [selected, capital, riskPct]);
+
+      const presets = [
+        ["ALL", "🌐 Semua"],
+        ["WATCHLIST", `⭐ Watchlist (${watchlist.length})`],
+        ["SNIPER", "🏆 Top Alpha (≥70)"],
+        ["BANDAR", "🐋 Bandar VPA"],
+        ["BREAKOUT", "⚡ Squeeze Breakout"],
+        ["VALUE", "💎 Value GARP"],
+        ["REBOUND", "🎯 Rebound/BOW"],
+      ];
+
+      return (
+        <div className="min-h-screen flex flex-col">
+          <TickerTape />
+
+          {/* Header dengan tombol rapi & seragam */}
+          <header className="px-4 lg:px-6 py-3.5 border-b border-slate-800/80 bg-slate-950/75 sticky top-0 z-30 backdrop-blur-xl">
+            <div className="max-w-[1800px] mx-auto flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-400 to-cyan-500 flex items-center justify-center text-slate-950 font-extrabold text-lg shadow-lg shadow-emerald-500/20">α</div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h1 className="text-lg font-extrabold text-white tracking-tight">ALPHA <span className="text-emerald-400">IDX</span> • IHSG & ISSI</h1>
+                    <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">LIVE TRADINGVIEW</span>
+                  </div>
+                  <p className="text-xs text-slate-400">5-Pillar Quantitative Engine • Smart Money VPA • OJK Syariah • Fraksi BEI</p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <span className={`h-9 inline-flex items-center text-xs font-mono px-3 rounded-lg border ${error ? "bg-rose-500/10 border-rose-500/30 text-rose-300" : "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"}`}>
+                  {loading ? "Memuat data live..." : (error ? error : `LIVE • ${meta.updated_at}`)}
+                </span>
+                <button onClick={openIssiModal} className="h-9 inline-flex items-center gap-1.5 px-3.5 text-xs font-semibold rounded-lg bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-emerald-300 transition">
+                  <span>☪</span><span>Update ISSI</span>
+                </button>
+                <button onClick={exportCsv} className="h-9 inline-flex items-center gap-1.5 px-3.5 text-xs font-semibold rounded-lg bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-slate-200 transition">
+                  <span>📥</span><span>Export CSV</span>
+                </button>
+                <button onClick={() => fetchScan(true)} className="h-9 inline-flex items-center gap-1.5 px-4 text-xs font-extrabold rounded-lg bg-gradient-to-r from-emerald-400 to-cyan-400 hover:brightness-110 text-slate-950 shadow-lg shadow-emerald-500/20 transition">
+                  <span>↻</span><span>Scan Ulang Live</span>
+                </button>
+              </div>
+            </div>
+          </header>
+
+          <main className="flex-1 max-w-[1800px] w-full mx-auto p-4 lg:p-6 space-y-4">
+            {topAlerts.length > 0 && (
+              <div className="glass rounded-xl px-4 py-2.5 flex flex-wrap items-center gap-2">
+                <span className="text-[11px] font-bold uppercase text-emerald-400 mr-1">🔥 Sinyal Terkuat:</span>
+                {topAlerts.map((a) => (
+                  <button
+                    key={a.ticker}
+                    onClick={() => setSelectedTicker(a.ticker)}
+                    className="h-7 px-2.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/25 border border-emerald-500/30 text-xs font-mono text-white inline-flex items-center gap-1.5 transition"
+                  >
+                    <span className="font-bold text-emerald-300">{a.ticker}</span>
+                    <span className="text-[10px] text-slate-300">Skor {a.alpha_score}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="glass rounded-xl p-3.5"><div className="text-xs text-slate-400">Emiten IDX</div><div className="text-2xl font-extrabold font-mono text-white mt-1">{meta.total_scanned}</div></div>
+              <div className="glass rounded-xl p-3.5"><div className="text-xs text-slate-400">Lolos ISSI Syariah</div><div className="text-2xl font-extrabold font-mono text-emerald-400 mt-1">{meta.total_issi}</div></div>
+              <div className="glass rounded-xl p-3.5"><div className="text-xs text-slate-400">Strong Buy / Breakout</div><div className="text-2xl font-extrabold font-mono text-cyan-400 mt-1">{meta.strong_buy_count}</div></div>
+              <div className="glass rounded-xl p-3.5"><div className="text-xs text-slate-400">Saham Terpilih</div><div className="text-2xl font-extrabold font-mono text-amber-400 mt-1">{selected ? selected.ticker : "-"}</div></div>
+            </section>
+
+            {/* Filter & Preset Bar */}
+            <section className="glass rounded-2xl p-3.5 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap gap-2">
+                {presets.map(([k, lbl]) => (
+                  <button
+                    key={k}
+                    onClick={() => setPreset(k)}
+                    className={`h-8 px-3 rounded-lg text-xs inline-flex items-center transition ${preset === k ? "bg-emerald-500 text-slate-950 font-extrabold shadow-md shadow-emerald-500/20" : "bg-slate-800/90 text-slate-300 hover:bg-slate-700 border border-slate-700/60 font-semibold"}`}
+                  >
+                    {lbl}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="h-8 inline-flex items-center gap-2 px-3 rounded-lg bg-emerald-500/10 border border-emerald-500/30 cursor-pointer text-xs font-bold text-emerald-300">
+                  <input type="checkbox" checked={onlyIssi} onChange={(e) => setOnlyIssi(e.target.checked)} className="accent-emerald-400" />
+                  ☪ Khusus ISSI Syariah
+                </label>
+                <select value={minVal} onChange={(e) => setMinVal(Number(e.target.value))} className="h-8 bg-slate-900 border border-slate-700 rounded-lg px-2.5 text-xs text-slate-200 focus:outline-none focus:border-cyan-400">
+                  <option value={0}>Semua Likuiditas</option>
+                  <option value={1}>Transaksi ≥ Rp 1 Miliar</option>
+                  <option value={5}>Transaksi ≥ Rp 5 Miliar</option>
+                  <option value={20}>Transaksi ≥ Rp 20 Miliar</option>
+                </select>
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Cari kode (BRIS, TLKM)..."
+                  className="h-8 bg-slate-900 border border-slate-700 rounded-lg px-3 text-xs text-white w-48 focus:outline-none focus:border-emerald-400"
+                />
+              </div>
+            </section>
+
+            {/* Split Workspace */}
+            <section className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
+              {/* Tabel */}
+              <div className={`${expanded ? "xl:col-span-12 order-2" : "xl:col-span-7"} glass rounded-2xl overflow-hidden`}>
+                <div className="px-4 py-3 border-b border-slate-800 flex justify-between text-xs">
+                  <span className="font-bold uppercase text-slate-300">Hasil Screening (<span className="text-emerald-400 font-mono">{filtered.length}</span> Saham)</span>
+                  <span className="text-slate-400">Klik ★ untuk Watchlist • Klik baris untuk Chart</span>
+                </div>
+                <div className="overflow-x-auto max-h-[760px] overflow-y-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-900/95 sticky top-0 z-10 text-[11px] uppercase text-slate-400 border-b border-slate-800">
+                      <tr>
+                        <th className="py-2.5 px-3 cursor-pointer hover:text-white" onClick={() => handleSort("ticker")}>Saham</th>
+                        <th className="py-2.5 px-2 text-right cursor-pointer hover:text-white" onClick={() => handleSort("close")}>Harga</th>
+                        <th className="py-2.5 px-2 text-right cursor-pointer hover:text-white" onClick={() => handleSort("alpha_score")}>Skor α</th>
+                        <th className="py-2.5 px-2">Rekomendasi</th>
+                        <th className="py-2.5 px-2 text-right">Area Beli / SL</th>
+                        <th className="py-2.5 px-2 text-right">TP1 / TP2</th>
+                        <th className="py-2.5 px-2 text-right cursor-pointer hover:text-white" onClick={() => handleSort("rvol")}>RVOL / RSI</th>
+                        <th className="py-2.5 px-3 text-right cursor-pointer hover:text-white" onClick={() => handleSort("value_traded_b")}>Val (M)</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60">
+                      {filtered.slice(0, 200).map((s) => {
+                        const isActive = selected && selected.ticker === s.ticker;
+                        const isFav = watchlist.includes(s.ticker);
+                        return (
+                          <tr
+                            key={s.ticker}
+                            onClick={() => setSelectedTicker(s.ticker)}
+                            className={`cursor-pointer hover:bg-slate-800/60 transition ${isActive ? "bg-emerald-500/15 shadow-[inset_3px_0_0_#10b981]" : ""}`}
+                          >
+                            <td className="py-2.5 px-3">
+                              <div className="flex items-center gap-1.5">
+                                <button onClick={(e) => toggleWatchlist(e, s.ticker)} className={`text-sm leading-none ${isFav ? "text-amber-400" : "text-slate-600 hover:text-amber-300"}`}>★</button>
+                                <span className="font-mono font-bold text-white text-sm">{s.ticker}</span>
+                                {s.is_issi && <span className="px-1 text-[9px] font-bold rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">ISSI</span>}
+                              </div>
+                              <div className="text-[10px] text-slate-400 truncate max-w-[140px] pl-5">{s.name}</div>
+                            </td>
+                            <td className="py-2.5 px-2 text-right font-mono">
+                              <div className="font-bold text-white">{s.close.toLocaleString("id-ID")}</div>
+                              <div className={`text-[11px] font-bold ${s.change > 0 ? "text-emerald-400" : s.change < 0 ? "text-rose-400" : "text-slate-300"}`}>
+                                {s.change > 0 ? "+" : ""}{s.change}%
+                              </div>
+                            </td>
+                            <td className="py-2.5 px-2 text-right font-mono font-extrabold text-white">{s.alpha_score}</td>
+                            <td className="py-2.5 px-2">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold border whitespace-nowrap ${sigBadge(s.signal_code)}`}>{s.signal}</span>
+                            </td>
+                            <td className="py-2.5 px-2 text-right font-mono">
+                              <div className="text-cyan-300">{s.plan.entry_low.toLocaleString("id-ID")}–{s.plan.entry_high.toLocaleString("id-ID")}</div>
+                              <div className="text-rose-400 text-[10px]">SL {s.plan.stop_loss.toLocaleString("id-ID")}</div>
+                            </td>
+                            <td className="py-2.5 px-2 text-right font-mono">
+                              <div className="text-emerald-400">{s.plan.tp1.toLocaleString("id-ID")} (+{s.plan.tp1_pct}%)</div>
+                              <div className="text-amber-300 text-[10px]">TP2 {s.plan.tp2.toLocaleString("id-ID")}</div>
+                            </td>
+                            <td className="py-2.5 px-2 text-right font-mono">
+                              <div className={s.rvol >= 1.5 ? "text-cyan-300 font-bold" : "text-slate-300"}>{s.rvol}x</div>
+                              <div className="text-[10px] text-slate-400">RSI {s.rsi}</div>
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-mono text-slate-300">{s.value_traded_b.toFixed(1)}M</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Detail + Chart */}
+              {selected && (
+                <div className={`${expanded ? "xl:col-span-12 order-1" : "xl:col-span-5 xl:sticky xl:top-20"} space-y-4`}>
+                  <div className="glass rounded-2xl p-4 space-y-3">
+                    <div className="flex justify-between items-start gap-2">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h2 className="text-2xl font-extrabold font-mono text-white">IDX:{selected.ticker}</h2>
+                          {selected.is_issi && <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">☪ ISSI</span>}
+                          <span className={`px-2 py-0.5 text-[10px] font-bold rounded border ${sigBadge(selected.signal_code)}`}>{selected.signal}</span>
+                        </div>
+                        <p className="text-xs text-slate-400 mt-0.5">{selected.name} • {selected.sector}</p>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-2xl font-extrabold font-mono text-white">{fmtRp(selected.close)}</div>
+                        <div className={`text-xs font-mono font-bold ${selected.change >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                          {selected.change > 0 ? "+" : ""}{selected.change}% • Val Rp {selected.value_traded_b} M
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      <div className="rounded-xl bg-slate-900 border border-cyan-500/30 p-2.5"><div className="text-[10px] text-cyan-300 font-bold">AREA BELI</div><div className="text-xs font-mono font-bold text-white mt-0.5">{selected.plan.entry_low.toLocaleString("id-ID")}–{selected.plan.entry_high.toLocaleString("id-ID")}</div></div>
+                      <div className="rounded-xl bg-slate-900 border border-rose-500/30 p-2.5"><div className="text-[10px] text-rose-300 font-bold">CUT LOSS</div><div className="text-xs font-mono font-bold text-rose-400 mt-0.5">{selected.plan.stop_loss.toLocaleString("id-ID")} ({selected.plan.sl_pct}%)</div></div>
+                      <div className="rounded-xl bg-slate-900 border border-emerald-500/30 p-2.5"><div className="text-[10px] text-emerald-300 font-bold">TARGET 1</div><div className="text-xs font-mono font-bold text-emerald-400 mt-0.5">{selected.plan.tp1.toLocaleString("id-ID")} (+{selected.plan.tp1_pct}%)</div></div>
+                      <div className="rounded-xl bg-slate-900 border border-amber-500/30 p-2.5"><div className="text-[10px] text-amber-300 font-bold">TARGET 2</div><div className="text-xs font-mono font-bold text-amber-300 mt-0.5">{selected.plan.tp2.toLocaleString("id-ID")} (+{selected.plan.tp2_pct}%)</div></div>
+                    </div>
+
+                    <div className="text-xs text-slate-200 bg-slate-900/80 border border-slate-800 rounded-xl p-3">{selected.plan.note}</div>
+
+                    <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3 space-y-2">
+                      <div className="flex justify-between text-[11px] font-bold">
+                        <span className="text-slate-300">KALKULATOR LOT</span>
+                        <span className="font-mono text-emerald-400">R:R 1 : {selected.plan.rr}</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <input type="number" value={capital} step={1000000} onChange={(e) => setCapital(Number(e.target.value))} className="h-8 bg-slate-950 border border-slate-700 rounded-lg px-2.5 text-xs font-mono text-white" />
+                        <input type="number" value={riskPct} step={0.5} min={0.5} max={10} onChange={(e) => setRiskPct(Number(e.target.value))} className="h-8 bg-slate-950 border border-slate-700 rounded-lg px-2.5 text-xs font-mono text-white" />
+                      </div>
+                      {posCalc && (
+                        <div className="text-xs font-mono text-cyan-300">
+                          Beli Maks: <b className="text-white">{posCalc.lots} Lot</b> ({fmtRp(posCalc.val)}) • TP1: <b className="text-emerald-400">+{fmtRp(posCalc.profit)}</b> • SL: <b className="text-rose-400">-{fmtRp(posCalc.loss)}</b>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="glass rounded-2xl overflow-hidden">
+                    <div className="px-4 py-2.5 border-b border-slate-800 flex justify-between items-center">
+                      <span className="text-xs font-bold text-white">Chart Live TradingView: <span className="text-emerald-400 font-mono">IDX:{selected.ticker}</span></span>
+                      <div className="flex items-center gap-2">
+                        <select value={interval} onChange={(e) => setIntervalTv(e.target.value)} className="h-7 bg-slate-900 border border-slate-700 rounded-md px-2 text-[11px] text-slate-200">
+                          <option value="15">15m</option>
+                          <option value="60">1 Jam</option>
+                          <option value="D">Daily</option>
+                          <option value="W">Weekly</option>
+                        </select>
+                        <button onClick={() => setExpanded(!expanded)} className="h-7 px-2.5 rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[11px] font-semibold text-slate-200 transition">
+                          {expanded ? "⤡ Perkecil" : "⤢ Perbesar"}
+                        </button>
+                      </div>
+                    </div>
+                    <TradingViewChart ticker={selected.ticker} interval={interval} expanded={expanded} />
+                  </div>
+
+                  <div className="glass rounded-2xl overflow-hidden">
+                    <div className="px-4 py-2.5 border-b border-slate-800 text-xs font-bold text-slate-300">Speedometer Teknikal TradingView</div>
+                    <TradingViewGauge ticker={selected.ticker} />
+                  </div>
+                </div>
+              )}
+            </section>
+          </main>
+
+          {showIssiModal && (
+            <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="glass rounded-2xl max-w-lg w-full p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-base font-bold text-white">Update Daftar Saham ISSI (DES OJK)</h3>
+                  <button onClick={() => setShowIssiModal(false)} className="text-slate-400 hover:text-white text-lg">✕</button>
+                </div>
+                <textarea value={issiText} onChange={(e) => setIssiText(e.target.value)} rows={8} className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-xs font-mono text-emerald-300 focus:outline-none focus:border-emerald-400" />
+                <div className="flex justify-end gap-2">
+                  <button onClick={() => setShowIssiModal(false)} className="h-9 px-4 text-xs font-semibold rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700">Batal</button>
+                  <button onClick={saveIssiList} className="h-9 px-4 text-xs font-bold rounded-lg bg-emerald-500 text-slate-950 hover:bg-emerald-400">Simpan & Scan Ulang</button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>

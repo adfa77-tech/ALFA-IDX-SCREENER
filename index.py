@@ -122,6 +122,50 @@ def safe_num(val, default=None):
         return default
 
 
+def translate_to_id(text):
+    if not text or not text.strip():
+        return ""
+    try:
+        data = urllib.parse.urlencode({"q": text[:3000]}).encode("utf-8")
+        req = urllib.request.Request(
+            "https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=id&dt=t",
+            data=data,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            parsed = json.loads(resp.read().decode("utf-8"))
+        translated = "".join(chunk[0] for chunk in parsed[0] if chunk and chunk[0])
+        return translated or text
+    except Exception:
+        return text
+
+
+def translate_role(title):
+    if not title:
+        return "-"
+    replacements = [
+        ("Vice President Director", "Wakil Direktur Utama"),
+        ("President Director", "Direktur Utama"),
+        ("Independent President Commissioner", "Komisaris Utama Independen"),
+        ("President Commissioner", "Komisaris Utama"),
+        ("Independent Commissioner", "Komisaris Independen"),
+        ("Vice President Commissioner", "Wakil Komisaris Utama"),
+        ("Chief Executive Officer", "Direktur Utama (CEO)"),
+        ("Chief Financial Officer", "Direktur Keuangan (CFO)"),
+        ("Chief Operating Officer", "Direktur Operasional (COO)"),
+        ("Corporate Secretary", "Sekretaris Perusahaan"),
+        ("Commissioner", "Komisaris"),
+        ("Director", "Direktur"),
+        ("Officer", "Pejabat Eksekutif"),
+        ("10% Owner", "Pemegang Saham ≥10%"),
+        ("Beneficial Owner", "Pemilik Manfaat / Pengendali"),
+    ]
+    out = title
+    for en, idn in replacements:
+        out = out.replace(en, idn)
+    return out
+
+
 def post_tv_scanner(columns):
     payload = {
         "filter": [
@@ -551,7 +595,8 @@ def fetch_yahoo_profile(ticker):
         result["yahoo_ok"] = True
 
         ap = data.get("assetProfile") or {}
-        result["summary"] = ap.get("longBusinessSummary") or ""
+        raw_summary = ap.get("longBusinessSummary") or ""
+        result["summary"] = translate_to_id(raw_summary) if raw_summary else ""
         result["website"] = ap.get("website") or ""
         addr_parts = [ap.get("address1"), ap.get("city"), ap.get("country")]
         result["address"] = ", ".join([p for p in addr_parts if p])
@@ -559,7 +604,7 @@ def fetch_yahoo_profile(ticker):
         result["officers"] = [
             {
                 "name": o.get("name") or "-",
-                "title": o.get("title") or "-",
+                "title": translate_role(o.get("title") or "-"),
                 "age": o.get("age"),
             }
             for o in (ap.get("companyOfficers") or [])[:12]
@@ -596,7 +641,7 @@ def fetch_yahoo_profile(ticker):
         result["insider_holders"] = [
             {
                 "name": h.get("name") or "-",
-                "relation": h.get("relation") or "-",
+                "relation": translate_role(h.get("relation") or "-"),
                 "action": h.get("transactionDescription") or "-",
                 "date": (h.get("latestTransDate") or {}).get("fmt") or "-",
                 "shares": (h.get("positionDirect") or {}).get("fmt") or "-",
@@ -608,8 +653,8 @@ def fetch_yahoo_profile(ticker):
         result["insider_transactions"] = [
             {
                 "name": tx.get("filerName") or "-",
-                "relation": tx.get("filerRelation") or "-",
-                "text": tx.get("transactionText") or "-",
+                "relation": translate_role(tx.get("filerRelation") or "-"),
+                "text": (tx.get("transactionText") or "-").replace("Purchase", "Pembelian").replace("Sale", "Penjualan"),
                 "shares": (tx.get("shares") or {}).get("fmt") or "-",
                 "value": (tx.get("value") or {}).get("fmt") or "-",
                 "date": (tx.get("startDate") or {}).get("fmt") or "-",
@@ -659,7 +704,7 @@ def fetch_yahoo_profile(ticker):
 
         _profile_cache[ticker] = {"ts": now, "data": result}
     except Exception as e:
-        result["yahoo_note"] = f"Feed kepemilikan Yahoo Finance sementara dibatasi ({e}). Widget resmi TradingView di bawah tetap tampil live."
+        result["yahoo_note"] = f"Feed kepemilikan Yahoo Finance sementara dibatasi ({e}). Ringkasan & laporan TradingView tetap tampil live."
 
     return result
 

@@ -142,8 +142,6 @@
         ref.current.innerHTML = "";
         const wrap = document.createElement("div");
         wrap.className = "tradingview-widget-container";
-        wrap.style.height = "100%";
-        wrap.style.width = "100%";
         const w = document.createElement("div");
         w.className = "tradingview-widget-container__widget";
         wrap.appendChild(w);
@@ -152,16 +150,17 @@
         s.async = true;
         s.text = JSON.stringify({
           width: "100%",
-          height: "100%",
+          height: 420,
           isTransparent: true,
           colorTheme: "dark",
           symbol: "IDX:" + ticker,
-          locale: "id",
+          locale: "en",
         });
         wrap.appendChild(s);
         ref.current.appendChild(wrap);
       }, [ticker]);
-      return <div ref={ref} className="w-full h-[420px] bg-slate-950" />;
+
+      return <div ref={ref} className="w-full min-h-[420px] bg-slate-950" />;
     }
 
     function TradingViewFinancialsWidget({ ticker }) {
@@ -171,8 +170,6 @@
         ref.current.innerHTML = "";
         const wrap = document.createElement("div");
         wrap.className = "tradingview-widget-container";
-        wrap.style.height = "100%";
-        wrap.style.width = "100%";
         const w = document.createElement("div");
         w.className = "tradingview-widget-container__widget";
         wrap.appendChild(w);
@@ -184,15 +181,16 @@
           largeChartUrl: "",
           displayMode: "regular",
           width: "100%",
-          height: "100%",
+          height: 640,
           colorTheme: "dark",
           symbol: "IDX:" + ticker,
-          locale: "id",
+          locale: "en",
         });
         wrap.appendChild(s);
         ref.current.appendChild(wrap);
       }, [ticker]);
-      return <div ref={ref} className="w-full h-[640px] bg-slate-950" />;
+
+      return <div ref={ref} className="w-full min-h-[640px] bg-slate-950" />;
     }
 
     function ProfileInsiderView({ stock, allStocks, onSelectTicker, onBackToChart }) {
@@ -242,7 +240,7 @@
                   <h2 className="text-base lg:text-lg font-extrabold text-white">Profil Emiten, Pemegang Saham & Insider • <span className="text-amber-300 font-mono">IDX:{stock.ticker}</span></h2>
                   {stock.is_issi && <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">☪ ISSI</span>}
                 </div>
-                <p className="text-xs text-slate-400">{stock.name} • {stock.sector} • Market Cap Rp {stock.mcap_t} Triliun</p>
+                <p className="text-xs text-slate-400">{stock.name} • {stock.sector} • Kapitalisasi Pasar Rp {stock.mcap_t} Triliun</p>
               </div>
             </div>
 
@@ -288,7 +286,7 @@
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="text-xs font-bold uppercase text-amber-300">📊 Struktur Kepemilikan Saham & Free Float</div>
               <div className="text-xs font-mono text-slate-400">
-                Saham Beredar: <b className="text-white">{own.shares_outstanding_fmt || "-"}</b> • Float: <b className="text-cyan-300">{own.float_shares_fmt || "-"}</b>
+                Saham Beredar: <b className="text-white">{own.shares_outstanding_fmt || "-"}</b> • Saham Publik (Float): <b className="text-cyan-300">{own.float_shares_fmt || "-"}</b>
               </div>
             </div>
 
@@ -307,9 +305,9 @@
                 <div className="text-2xl font-extrabold font-mono text-emerald-400 mt-1">{own.public_float_pct != null ? `${own.public_float_pct}%` : "-"}</div>
               </div>
               <div className="rounded-xl bg-slate-900/90 border border-slate-700 p-3">
-                <div className="text-[11px] text-slate-400">Valuasi & Syariah</div>
+                <div className="text-[11px] text-slate-400">Valuasi & Syariah OJK</div>
                 <div className="text-sm font-mono font-bold text-white mt-1.5">PER {stock.pe ?? "-"}x • PBV {stock.pbv ?? "-"}x</div>
-                <div className="text-[11px] text-emerald-300 mt-0.5">Debt/Asset: {stock.debt_asset_ratio != null ? `${stock.debt_asset_ratio}%` : "-"}</div>
+                <div className="text-[11px] text-emerald-300 mt-0.5">Utang/Aset: {stock.debt_asset_ratio != null ? `${stock.debt_asset_ratio}%` : "-"}</div>
               </div>
             </div>
 
@@ -329,13 +327,13 @@
             )}
           </div>
 
-          {loading && <div className="glass rounded-xl p-6 text-center text-xs text-amber-300 animate-pulse">Mengambil data Direksi, Pemegang Saham & Transaksi Insider IDX:{stock.ticker}...</div>}
+          {loading && <div className="glass rounded-xl p-6 text-center text-xs text-amber-300 animate-pulse">Mengambil & menerjemahkan data Profil, Direksi, Pemegang Saham & Insider IDX:{stock.ticker}...</div>}
 
           <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
             <div className="xl:col-span-6 space-y-5">
               <div className="glass rounded-2xl p-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="text-xs font-bold uppercase text-cyan-300">🏢 Tentang Perusahaan & Manajemen</div>
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="text-xs font-bold uppercase text-cyan-300">🏢 Tentang Perusahaan & Manajemen (Bahasa Indonesia)</div>
                   {p && p.website && (
                     <a href={p.website} target="_blank" rel="noopener noreferrer" className="text-xs text-emerald-400 hover:underline font-mono">
                       {p.website} ↗
@@ -348,9 +346,9 @@
                   </div>
                 )}
                 {p && p.summary ? (
-                  <p className="text-xs text-slate-300 leading-relaxed max-h-40 overflow-y-auto pr-1">{p.summary}</p>
+                  <p className="text-xs text-slate-200 leading-relaxed max-h-48 overflow-y-auto pr-1">{p.summary}</p>
                 ) : (
-                  <p className="text-xs text-slate-400">Ringkasan detail tersedia pada widget TradingView di bawah.</p>
+                  <p className="text-xs text-slate-400">Ringkasan emiten ini tidak tersedia di feed publik; lihat ringkasan statistik TradingView di bawah.</p>
                 )}
 
                 {p && p.officers && p.officers.length > 0 && (
@@ -376,9 +374,47 @@
                 )}
               </div>
 
+              {/* Kartu Ringkasan Data Live TradingView (Selalu Terisi Penuh!) */}
+              <div className="glass rounded-2xl p-4 space-y-3">
+                <div className="text-xs font-bold uppercase text-emerald-300">📌 Ringkasan Profil & Statistik Live TradingView</div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-xs">
+                  <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-2.5">
+                    <div className="text-[10px] text-slate-400">Sektor / Industri</div>
+                    <div className="font-semibold text-white mt-0.5">{stock.sector}</div>
+                    <div className="text-[10px] text-slate-400 truncate">{stock.industry}</div>
+                  </div>
+                  <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-2.5">
+                    <div className="text-[10px] text-slate-400">Kapitalisasi Pasar</div>
+                    <div className="font-mono font-bold text-white mt-0.5">Rp {stock.mcap_t} T</div>
+                    <div className="text-[10px] text-cyan-300">Val Harian: Rp {stock.value_traded_b} M</div>
+                  </div>
+                  <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-2.5">
+                    <div className="text-[10px] text-slate-400">Rentang 52 Minggu</div>
+                    <div className="font-mono font-bold text-white mt-0.5">{stock.low_52w?.toLocaleString("id-ID")} – {stock.high_52w?.toLocaleString("id-ID")}</div>
+                    <div className="text-[10px] text-slate-400">Performa 1Bln: {stock.perf_1m > 0 ? "+" : ""}{stock.perf_1m}%</div>
+                  </div>
+                  <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-2.5">
+                    <div className="text-[10px] text-slate-400">Profitabilitas (ROE / NPM)</div>
+                    <div className="font-mono font-bold text-emerald-400 mt-0.5">ROE {stock.roe ?? "-"}%</div>
+                    <div className="text-[10px] text-slate-400">Net Margin: {stock.npm ?? "-"}%</div>
+                  </div>
+                  <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-2.5">
+                    <div className="text-[10px] text-slate-400">Dividen Yield</div>
+                    <div className="font-mono font-bold text-amber-300 mt-0.5">{stock.div_yield}%</div>
+                    <div className="text-[10px] text-slate-400">Status: {stock.is_issi ? "Syariah ISSI" : "Non-ISSI"}</div>
+                  </div>
+                  <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-2.5">
+                    <div className="text-[10px] text-slate-400">Posisi Tren (EMA20 / 200)</div>
+                    <div className="font-mono font-bold text-white mt-0.5">{stock.ema20.toLocaleString("id-ID")} / {stock.ema200.toLocaleString("id-ID")}</div>
+                    <div className="text-[10px] text-cyan-300">ADX: {stock.adx}</div>
+                  </div>
+                </div>
+              </div>
+
               <div className="glass rounded-2xl overflow-hidden">
-                <div className="px-4 py-2.5 border-b border-slate-800 text-xs font-bold text-slate-300">
-                  Profil Resmi TradingView (IDX:{stock.ticker})
+                <div className="px-4 py-2.5 border-b border-slate-800 flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-300">Profil Resmi TradingView (IDX:{stock.ticker})</span>
+                  <span className="text-[10px] text-slate-500">Kosong jika emiten tidak punya bio di TV / terblokir AdBlocker</span>
                 </div>
                 <TradingViewProfileWidget ticker={stock.ticker} />
               </div>
@@ -429,8 +465,8 @@
                         <tbody className="divide-y divide-slate-800/60">
                           {p.insider_transactions.map((tx, idx) => {
                             const txt = (tx.text || "").toLowerCase();
-                            const isBuy = txt.includes("buy") || txt.includes("purchase") || txt.includes("beli");
-                            const isSell = txt.includes("sell") || txt.includes("sale") || txt.includes("jual");
+                            const isBuy = txt.includes("buy") || txt.includes("purchase") || txt.includes("pembelian") || txt.includes("beli");
+                            const isSell = txt.includes("sell") || txt.includes("sale") || txt.includes("penjualan") || txt.includes("jual");
                             return (
                               <tr key={idx}>
                                 <td className="py-1.5">

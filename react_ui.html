@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ALPHA IDX • IHSG & ISSI Screener</title>
+  <title>ALPHA IDX • IHSG & ISSI Screener + AI Analyst</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -135,7 +135,282 @@
       return <div ref={ref} className="w-full h-[380px] bg-slate-950" />;
     }
 
+    function DeepAiView({ stock, allStocks, onSelectTicker, onBackToChart }) {
+      const [report, setReport] = useState(null);
+      const [loading, setLoading] = useState(false);
+      const [err, setErr] = useState("");
+      const [question, setQuestion] = useState("");
+      const [apiKey, setApiKey] = useState(() => localStorage.getItem("alpha_idx_gemini_key") || "");
+      const [showKeyBox, setShowKeyBox] = useState(false);
+
+      const runAnalysis = async (customQ = "") => {
+        if (!stock) return;
+        setLoading(true);
+        setErr("");
+        try {
+          const res = await fetch("/api/ai-analyze", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ticker: stock.ticker, question: customQ, api_key: apiKey }),
+          });
+          const data = await res.json();
+          if (data.error) throw new Error(data.error);
+          setReport(data);
+        } catch (e) {
+          setErr(e.message);
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      useEffect(() => {
+        if (stock) runAnalysis("");
+      }, [stock && stock.ticker]);
+
+      const saveKey = (val) => {
+        setApiKey(val);
+        localStorage.setItem("alpha_idx_gemini_key", val);
+      };
+
+      const quickPrompts = [
+        "Apakah aman di-hold jangka menengah (1–3 bulan)?",
+        "Strategi entry cicil & cut loss terbaik?",
+        "Bandingkan dengan kompetitor satu sektornya!",
+        "Cek risiko jebakan bandar / bull trap",
+      ];
+
+      if (!stock) {
+        return <div className="glass rounded-2xl p-8 text-center text-slate-400">Memuat data saham...</div>;
+      }
+
+      return (
+        <div className="space-y-5">
+          {/* AI Control Header */}
+          <div className="glass rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-violet-500 to-cyan-500 flex items-center justify-center text-white text-lg font-extrabold shadow-lg shadow-violet-500/20">
+                🤖
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-base lg:text-lg font-extrabold text-white">AI Deep Equity Analyst • <span className="text-emerald-400 font-mono">IDX:{stock.ticker}</span></h2>
+                  {stock.is_issi && <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">☪ ISSI</span>}
+                </div>
+                <p className="text-xs text-slate-400">{stock.name} • {stock.sector} • Harga Rp {stock.close.toLocaleString("id-ID")} ({stock.change > 0 ? "+" : ""}{stock.change}%)</p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={stock.ticker}
+                onChange={(e) => onSelectTicker(e.target.value)}
+                className="h-9 bg-slate-900 border border-slate-700 rounded-lg px-3 text-xs font-mono text-white focus:outline-none focus:border-violet-400"
+              >
+                {allStocks.slice(0, 150).map((x) => (
+                  <option key={x.ticker} value={x.ticker}>
+                    {x.ticker} — Skor {x.alpha_score} ({x.signal})
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={() => setShowKeyBox(!showKeyBox)}
+                className="h-9 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-violet-300 transition"
+              >
+                🔑 {apiKey ? "Gemini Key Aktif" : "Mode Gemini (Opsional)"}
+              </button>
+              <button
+                onClick={() => runAnalysis(question)}
+                className="h-9 px-3.5 rounded-lg bg-gradient-to-r from-violet-500 to-cyan-500 hover:brightness-110 text-xs font-extrabold text-white transition"
+              >
+                ⚡ Analisa Ulang AI
+              </button>
+              <button
+                onClick={onBackToChart}
+                className="h-9 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-slate-200 transition"
+              >
+                ← Kembali ke Chart
+              </button>
+            </div>
+          </div>
+
+          {showKeyBox && (
+            <div className="glass rounded-xl p-4 flex flex-wrap items-center justify-between gap-3 border-violet-500/30">
+              <div className="text-xs text-slate-300 max-w-2xl">
+                <b className="text-violet-300">Opsional (Gemini LLM):</b> Tanpa API Key, menu ini tetap berjalan penuh dengan <b>Quant AI Analyst Bawaan</b>. Jika ingin analisa naratif ekstra dari Google Gemini, tempel API Key gratis dari <i>aistudio.google.com</i> di sini:
+              </div>
+              <div className="flex items-center gap-2 flex-1 max-w-md">
+                <input
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => saveKey(e.target.value)}
+                  placeholder="AIzaSy... (opsional)"
+                  className="h-8 flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 text-xs font-mono text-white"
+                />
+                <button onClick={() => runAnalysis(question)} className="h-8 px-3 rounded-lg bg-violet-500 text-white text-xs font-bold">Terapkan</button>
+              </div>
+            </div>
+          )}
+
+          {err && <div className="glass rounded-xl p-4 border-rose-500/40 text-xs text-rose-300">Error AI: {err}</div>}
+          {loading && <div className="glass rounded-2xl p-10 text-center text-sm text-cyan-300 animate-pulse">🤖 Sedang membedah data teknikal, aliran dana bandar, valuasi, dan komparasi sektor IDX:{stock.ticker}...</div>}
+
+          {report && !loading && (
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+              {/* Kiri: Diagnosa Mendalam 8 Kolom */}
+              <div className="lg:col-span-8 space-y-4">
+                {/* Summary Verdict Cards */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="glass rounded-xl p-4 border-violet-500/30">
+                    <div className="text-[11px] uppercase text-slate-400 font-bold">AI Conviction Score</div>
+                    <div className="text-3xl font-extrabold font-mono text-violet-300 mt-1">{report.conviction}<span className="text-sm text-slate-400">/100</span></div>
+                    <div className="text-xs text-emerald-300 mt-1 font-semibold">{stock.signal}</div>
+                  </div>
+                  <div className="glass rounded-xl p-4 border-cyan-500/30">
+                    <div className="text-[11px] uppercase text-slate-400 font-bold">Horizon Paling Cocok</div>
+                    <div className="text-sm font-extrabold text-cyan-300 mt-2 leading-snug">{report.horizon}</div>
+                    <div className="text-[11px] text-slate-400 mt-1">Risk:Reward 1 : {stock.plan.rr}</div>
+                  </div>
+                  <div className="glass rounded-xl p-4 border-emerald-500/30">
+                    <div className="text-[11px] uppercase text-slate-400 font-bold">Peringkat di Sektor</div>
+                    <div className="text-2xl font-extrabold font-mono text-emerald-400 mt-1">
+                      #{report.sector_context.rank} <span className="text-xs text-slate-400">dari {report.sector_context.total_peers} emiten</span>
+                    </div>
+                    <div className="text-[11px] text-slate-400 mt-1 truncate">{report.sector_context.sector}</div>
+                  </div>
+                </div>
+
+                {/* Diagnosa Stage, Order Flow, Valuasi */}
+                <div className="glass rounded-2xl p-5 space-y-4">
+                  <div>
+                    <div className="text-xs font-bold uppercase text-cyan-400">1. Fase Tren Pasar (Weinstein / Wyckoff)</div>
+                    <div className="text-sm font-extrabold text-white mt-1">{report.stage}</div>
+                    <p className="text-xs text-slate-300 mt-1 leading-relaxed">{report.stage_desc}</p>
+                  </div>
+                  <div className="border-t border-slate-800 pt-3">
+                    <div className="text-xs font-bold uppercase text-emerald-400">2. Pembacaan Order Flow & Smart Money</div>
+                    <p className="text-xs text-slate-300 mt-1 leading-relaxed">{report.order_flow}</p>
+                  </div>
+                  <div className="border-t border-slate-800 pt-3">
+                    <div className="text-xs font-bold uppercase text-amber-400">3. Audit Fundamental & Syariah OJK</div>
+                    <p className="text-xs text-slate-300 mt-1 leading-relaxed">{report.fund_audit}</p>
+                  </div>
+                </div>
+
+                {/* 3 Skenario Probabilistik */}
+                <div className="glass rounded-2xl p-5 space-y-3">
+                  <div className="text-xs font-bold uppercase text-slate-300">4. Playbook 3 Skenario Eksekusi</div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/30 p-3">
+                      <div className="text-xs font-extrabold text-emerald-300">🟢 Skenario Bullish</div>
+                      <p className="text-xs text-slate-200 mt-1.5 leading-relaxed">{report.scenarios.bullish}</p>
+                    </div>
+                    <div className="rounded-xl bg-amber-500/10 border border-amber-500/30 p-3">
+                      <div className="text-xs font-extrabold text-amber-300">🟡 Skenario Pullback</div>
+                      <p className="text-xs text-slate-200 mt-1.5 leading-relaxed">{report.scenarios.base}</p>
+                    </div>
+                    <div className="rounded-xl bg-rose-500/10 border border-rose-500/30 p-3">
+                      <div className="text-xs font-extrabold text-rose-300">🔴 Skenario Cut Loss</div>
+                      <p className="text-xs text-slate-200 mt-1.5 leading-relaxed">{report.scenarios.bearish}</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Interactive Tanya AI Box */}
+                <div className="glass rounded-2xl p-5 space-y-3 border-violet-500/30">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div className="text-xs font-bold uppercase text-violet-300">
+                      5. Konsultasi Interaktif AI {report.llm_used ? `(Gemini: ${report.llm_model})` : "(Quant AI Engine)"}
+                    </div>
+                    {report.llm_error && <span className="text-[10px] text-amber-400">{report.llm_error}</span>}
+                  </div>
+
+                  <div className="flex flex-wrap gap-1.5">
+                    {quickPrompts.map((qp) => (
+                      <button
+                        key={qp}
+                        onClick={() => { setQuestion(qp); runAnalysis(qp); }}
+                        className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-violet-500/20 border border-slate-700 hover:border-violet-400/50 text-[11px] text-slate-200 transition"
+                      >
+                        {qp}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex gap-2">
+                    <input
+                      value={question}
+                      onChange={(e) => setQuestion(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && runAnalysis(question)}
+                      placeholder={`Tanyakan apa saja tentang ${stock.ticker} (mis: apakah rawan bull trap?)...`}
+                      className="h-9 flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 text-xs text-white focus:outline-none focus:border-violet-400"
+                    />
+                    <button
+                      onClick={() => runAnalysis(question)}
+                      className="h-9 px-4 rounded-lg bg-violet-500 hover:bg-violet-400 text-xs font-bold text-white transition"
+                    >
+                      Tanya AI
+                    </button>
+                  </div>
+
+                  <div className="rounded-xl bg-slate-950/90 border border-slate-800 p-4 text-xs text-slate-200 leading-relaxed whitespace-pre-line">
+                    {report.qa_answer}
+                  </div>
+                </div>
+              </div>
+
+              {/* Kanan: Red Flags & Top Kompetitor Sektor (4 Kolom) */}
+              <div className="lg:col-span-4 space-y-4">
+                <div className="glass rounded-2xl p-4 space-y-2.5 border-rose-500/25">
+                  <div className="text-xs font-bold uppercase text-rose-300">⚠️ Deteksi Risiko & Red Flags</div>
+                  <ul className="space-y-2">
+                    {report.risk_flags.map((rf, idx) => (
+                      <li key={idx} className="text-xs text-slate-200 bg-slate-900/80 border border-slate-800 rounded-lg p-2.5">
+                        • {rf}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div className="glass rounded-2xl p-4 space-y-3">
+                  <div>
+                    <div className="text-xs font-bold uppercase text-emerald-300">🏆 Kompetitor Sektor ({report.sector_context.sector})</div>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Rata-rata skor sektor: {report.sector_context.avg_score} • Rata-rata change: {report.sector_context.avg_change > 0 ? "+" : ""}{report.sector_context.avg_change}%
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    {report.sector_context.top_peers.length === 0 && (
+                      <div className="text-xs text-slate-400">Tidak ada pembanding likuid di sektor ini.</div>
+                    )}
+                    {report.sector_context.top_peers.map((peer) => (
+                      <button
+                        key={peer.ticker}
+                        onClick={() => onSelectTicker(peer.ticker)}
+                        className="w-full text-left rounded-xl bg-slate-900/80 hover:bg-slate-800 border border-slate-800 hover:border-emerald-500/40 p-3 flex items-center justify-between transition"
+                      >
+                        <div>
+                          <div className="font-mono font-bold text-white text-sm">{peer.ticker} <span className="text-[10px] text-cyan-300 ml-1">Skor {peer.alpha_score}</span></div>
+                          <div className="text-[10px] text-slate-400">{peer.signal} • PER {peer.pe ?? "-"}x • ROE {peer.roe ?? "-"}%</div>
+                        </div>
+                        <div className="text-right font-mono">
+                          <div className="text-xs font-bold text-white">Rp {peer.close.toLocaleString("id-ID")}</div>
+                          <div className={`text-[11px] font-bold ${peer.change >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                            {peer.change > 0 ? "+" : ""}{peer.change}%
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
     function App() {
+      const [activePage, setActivePage] = useState("SCREENER"); // SCREENER | AI
       const [meta, setMeta] = useState({ updated_at: "-", total_scanned: 0, total_issi: 0, strong_buy_count: 0 });
       const [stocks, setStocks] = useState([]);
       const [loading, setLoading] = useState(true);
@@ -236,7 +511,9 @@
         });
       }, [stocks, onlyIssi, minVal, search, preset, watchlist, sortKey, sortAsc]);
 
-      const selected = useMemo(() => filtered.find((s) => s.ticker === selectedTicker) || filtered[0] || null, [filtered, selectedTicker]);
+      const selected = useMemo(() => {
+        return stocks.find((s) => s.ticker === selectedTicker) || filtered[0] || stocks[0] || null;
+      }, [stocks, filtered, selectedTicker]);
 
       const topAlerts = useMemo(() => {
         return stocks.filter((s) => (!onlyIssi || s.is_issi) && (s.signal_code === "STRONG_BUY" || s.signal_code === "BUY_BREAKOUT")).slice(0, 6);
@@ -293,7 +570,7 @@
         <div className="min-h-screen flex flex-col">
           <TickerTape />
 
-          {/* Header dengan tombol rapi & seragam */}
+          {/* Header + Menu Navigasi Utama */}
           <header className="px-4 lg:px-6 py-3.5 border-b border-slate-800/80 bg-slate-950/75 sticky top-0 z-30 backdrop-blur-xl">
             <div className="max-w-[1800px] mx-auto flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-3">
@@ -301,230 +578,260 @@
                 <div>
                   <div className="flex items-center gap-2">
                     <h1 className="text-lg font-extrabold text-white tracking-tight">ALPHA <span className="text-emerald-400">IDX</span> • IHSG & ISSI</h1>
-                    <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">LIVE TRADINGVIEW</span>
+                    <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">LIVE + AI</span>
                   </div>
-                  <p className="text-xs text-slate-400">5-Pillar Quantitative Engine • Smart Money VPA • OJK Syariah • Fraksi BEI</p>
+                  <p className="text-xs text-slate-400">5-Pillar Quant Engine • Deep AI Research • OJK Syariah • Fraksi BEI</p>
                 </div>
+              </div>
+
+              {/* Menu Switcher */}
+              <div className="flex items-center gap-1.5 bg-slate-900/90 p-1 rounded-xl border border-slate-800">
+                <button
+                  onClick={() => setActivePage("SCREENER")}
+                  className={`h-8 px-3.5 rounded-lg text-xs font-bold transition ${activePage === "SCREENER" ? "bg-emerald-500 text-slate-950 shadow" : "text-slate-300 hover:text-white"}`}
+                >
+                  📊 Screener & Chart
+                </button>
+                <button
+                  onClick={() => setActivePage("AI")}
+                  className={`h-8 px-3.5 rounded-lg text-xs font-bold transition ${activePage === "AI" ? "bg-gradient-to-r from-violet-500 to-cyan-500 text-white shadow" : "text-slate-300 hover:text-white"}`}
+                >
+                  🤖 Analisa AI Mendalam
+                </button>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
                 <span className={`h-9 inline-flex items-center text-xs font-mono px-3 rounded-lg border ${error ? "bg-rose-500/10 border-rose-500/30 text-rose-300" : "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"}`}>
                   {loading ? "Memuat data live..." : (error ? error : `LIVE • ${meta.updated_at}`)}
                 </span>
-                <button onClick={openIssiModal} className="h-9 inline-flex items-center gap-1.5 px-3.5 text-xs font-semibold rounded-lg bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-emerald-300 transition">
-                  <span>☪</span><span>Update ISSI</span>
+                <button onClick={openIssiModal} className="h-9 inline-flex items-center gap-1.5 px-3 text-xs font-semibold rounded-lg bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-emerald-300 transition">
+                  ☪ ISSI
                 </button>
-                <button onClick={exportCsv} className="h-9 inline-flex items-center gap-1.5 px-3.5 text-xs font-semibold rounded-lg bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-slate-200 transition">
-                  <span>📥</span><span>Export CSV</span>
+                <button onClick={exportCsv} className="h-9 inline-flex items-center gap-1.5 px-3 text-xs font-semibold rounded-lg bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-slate-200 transition">
+                  📥 CSV
                 </button>
-                <button onClick={() => fetchScan(true)} className="h-9 inline-flex items-center gap-1.5 px-4 text-xs font-extrabold rounded-lg bg-gradient-to-r from-emerald-400 to-cyan-400 hover:brightness-110 text-slate-950 shadow-lg shadow-emerald-500/20 transition">
-                  <span>↻</span><span>Scan Ulang Live</span>
+                <button onClick={() => fetchScan(true)} className="h-9 inline-flex items-center gap-1.5 px-3.5 text-xs font-extrabold rounded-lg bg-gradient-to-r from-emerald-400 to-cyan-400 hover:brightness-110 text-slate-950 shadow-lg shadow-emerald-500/20 transition">
+                  ↻ Scan Live
                 </button>
               </div>
             </div>
           </header>
 
           <main className="flex-1 max-w-[1800px] w-full mx-auto p-4 lg:p-6 space-y-4">
-            {topAlerts.length > 0 && (
-              <div className="glass rounded-xl px-4 py-2.5 flex flex-wrap items-center gap-2">
-                <span className="text-[11px] font-bold uppercase text-emerald-400 mr-1">🔥 Sinyal Terkuat:</span>
-                {topAlerts.map((a) => (
-                  <button
-                    key={a.ticker}
-                    onClick={() => setSelectedTicker(a.ticker)}
-                    className="h-7 px-2.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/25 border border-emerald-500/30 text-xs font-mono text-white inline-flex items-center gap-1.5 transition"
-                  >
-                    <span className="font-bold text-emerald-300">{a.ticker}</span>
-                    <span className="text-[10px] text-slate-300">Skor {a.alpha_score}</span>
-                  </button>
-                ))}
-              </div>
-            )}
+            {activePage === "AI" ? (
+              <DeepAiView
+                stock={selected}
+                allStocks={filtered.length > 0 ? filtered : stocks}
+                onSelectTicker={(t) => setSelectedTicker(t)}
+                onBackToChart={() => setActivePage("SCREENER")}
+              />
+            ) : (
+              <>
+                {topAlerts.length > 0 && (
+                  <div className="glass rounded-xl px-4 py-2.5 flex flex-wrap items-center gap-2">
+                    <span className="text-[11px] font-bold uppercase text-emerald-400 mr-1">🔥 Sinyal Terkuat:</span>
+                    {topAlerts.map((a) => (
+                      <button
+                        key={a.ticker}
+                        onClick={() => setSelectedTicker(a.ticker)}
+                        className="h-7 px-2.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/25 border border-emerald-500/30 text-xs font-mono text-white inline-flex items-center gap-1.5 transition"
+                      >
+                        <span className="font-bold text-emerald-300">{a.ticker}</span>
+                        <span className="text-[10px] text-slate-300">Skor {a.alpha_score}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
 
-            <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-              <div className="glass rounded-xl p-3.5"><div className="text-xs text-slate-400">Emiten IDX</div><div className="text-2xl font-extrabold font-mono text-white mt-1">{meta.total_scanned}</div></div>
-              <div className="glass rounded-xl p-3.5"><div className="text-xs text-slate-400">Lolos ISSI Syariah</div><div className="text-2xl font-extrabold font-mono text-emerald-400 mt-1">{meta.total_issi}</div></div>
-              <div className="glass rounded-xl p-3.5"><div className="text-xs text-slate-400">Strong Buy / Breakout</div><div className="text-2xl font-extrabold font-mono text-cyan-400 mt-1">{meta.strong_buy_count}</div></div>
-              <div className="glass rounded-xl p-3.5"><div className="text-xs text-slate-400">Saham Terpilih</div><div className="text-2xl font-extrabold font-mono text-amber-400 mt-1">{selected ? selected.ticker : "-"}</div></div>
-            </section>
+                <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                  <div className="glass rounded-xl p-3.5"><div className="text-xs text-slate-400">Emiten IDX</div><div className="text-2xl font-extrabold font-mono text-white mt-1">{meta.total_scanned}</div></div>
+                  <div className="glass rounded-xl p-3.5"><div className="text-xs text-slate-400">Lolos ISSI Syariah</div><div className="text-2xl font-extrabold font-mono text-emerald-400 mt-1">{meta.total_issi}</div></div>
+                  <div className="glass rounded-xl p-3.5"><div className="text-xs text-slate-400">Strong Buy / Breakout</div><div className="text-2xl font-extrabold font-mono text-cyan-400 mt-1">{meta.strong_buy_count}</div></div>
+                  <div className="glass rounded-xl p-3.5"><div className="text-xs text-slate-400">Saham Terpilih</div><div className="text-2xl font-extrabold font-mono text-amber-400 mt-1">{selected ? selected.ticker : "-"}</div></div>
+                </section>
 
-            {/* Filter & Preset Bar */}
-            <section className="glass rounded-2xl p-3.5 flex flex-wrap items-center justify-between gap-3">
-              <div className="flex flex-wrap gap-2">
-                {presets.map(([k, lbl]) => (
-                  <button
-                    key={k}
-                    onClick={() => setPreset(k)}
-                    className={`h-8 px-3 rounded-lg text-xs inline-flex items-center transition ${preset === k ? "bg-emerald-500 text-slate-950 font-extrabold shadow-md shadow-emerald-500/20" : "bg-slate-800/90 text-slate-300 hover:bg-slate-700 border border-slate-700/60 font-semibold"}`}
-                  >
-                    {lbl}
-                  </button>
-                ))}
-              </div>
+                <section className="glass rounded-2xl p-3.5 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex flex-wrap gap-2">
+                    {presets.map(([k, lbl]) => (
+                      <button
+                        key={k}
+                        onClick={() => setPreset(k)}
+                        className={`h-8 px-3 rounded-lg text-xs inline-flex items-center transition ${preset === k ? "bg-emerald-500 text-slate-950 font-extrabold shadow-md shadow-emerald-500/20" : "bg-slate-800/90 text-slate-300 hover:bg-slate-700 border border-slate-700/60 font-semibold"}`}
+                      >
+                        {lbl}
+                      </button>
+                    ))}
+                  </div>
 
-              <div className="flex flex-wrap items-center gap-2">
-                <label className="h-8 inline-flex items-center gap-2 px-3 rounded-lg bg-emerald-500/10 border border-emerald-500/30 cursor-pointer text-xs font-bold text-emerald-300">
-                  <input type="checkbox" checked={onlyIssi} onChange={(e) => setOnlyIssi(e.target.checked)} className="accent-emerald-400" />
-                  ☪ Khusus ISSI Syariah
-                </label>
-                <select value={minVal} onChange={(e) => setMinVal(Number(e.target.value))} className="h-8 bg-slate-900 border border-slate-700 rounded-lg px-2.5 text-xs text-slate-200 focus:outline-none focus:border-cyan-400">
-                  <option value={0}>Semua Likuiditas</option>
-                  <option value={1}>Transaksi ≥ Rp 1 Miliar</option>
-                  <option value={5}>Transaksi ≥ Rp 5 Miliar</option>
-                  <option value={20}>Transaksi ≥ Rp 20 Miliar</option>
-                </select>
-                <input
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Cari kode (BRIS, TLKM)..."
-                  className="h-8 bg-slate-900 border border-slate-700 rounded-lg px-3 text-xs text-white w-48 focus:outline-none focus:border-emerald-400"
-                />
-              </div>
-            </section>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label className="h-8 inline-flex items-center gap-2 px-3 rounded-lg bg-emerald-500/10 border border-emerald-500/30 cursor-pointer text-xs font-bold text-emerald-300">
+                      <input type="checkbox" checked={onlyIssi} onChange={(e) => setOnlyIssi(e.target.checked)} className="accent-emerald-400" />
+                      ☪ Khusus ISSI Syariah
+                    </label>
+                    <select value={minVal} onChange={(e) => setMinVal(Number(e.target.value))} className="h-8 bg-slate-900 border border-slate-700 rounded-lg px-2.5 text-xs text-slate-200 focus:outline-none focus:border-cyan-400">
+                      <option value={0}>Semua Likuiditas</option>
+                      <option value={1}>Transaksi ≥ Rp 1 Miliar</option>
+                      <option value={5}>Transaksi ≥ Rp 5 Miliar</option>
+                      <option value={20}>Transaksi ≥ Rp 20 Miliar</option>
+                    </select>
+                    <input
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                      placeholder="Cari kode (BRIS, TLKM)..."
+                      className="h-8 bg-slate-900 border border-slate-700 rounded-lg px-3 text-xs text-white w-48 focus:outline-none focus:border-emerald-400"
+                    />
+                  </div>
+                </section>
 
-            {/* Split Workspace */}
-            <section className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
-              {/* Tabel */}
-              <div className={`${expanded ? "xl:col-span-12 order-2" : "xl:col-span-7"} glass rounded-2xl overflow-hidden`}>
-                <div className="px-4 py-3 border-b border-slate-800 flex justify-between text-xs">
-                  <span className="font-bold uppercase text-slate-300">Hasil Screening (<span className="text-emerald-400 font-mono">{filtered.length}</span> Saham)</span>
-                  <span className="text-slate-400">Klik ★ untuk Watchlist • Klik baris untuk Chart</span>
-                </div>
-                <div className="overflow-x-auto max-h-[760px] overflow-y-auto">
-                  <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-900/95 sticky top-0 z-10 text-[11px] uppercase text-slate-400 border-b border-slate-800">
-                      <tr>
-                        <th className="py-2.5 px-3 cursor-pointer hover:text-white" onClick={() => handleSort("ticker")}>Saham</th>
-                        <th className="py-2.5 px-2 text-right cursor-pointer hover:text-white" onClick={() => handleSort("close")}>Harga</th>
-                        <th className="py-2.5 px-2 text-right cursor-pointer hover:text-white" onClick={() => handleSort("alpha_score")}>Skor α</th>
-                        <th className="py-2.5 px-2">Rekomendasi</th>
-                        <th className="py-2.5 px-2 text-right">Area Beli / SL</th>
-                        <th className="py-2.5 px-2 text-right">TP1 / TP2</th>
-                        <th className="py-2.5 px-2 text-right cursor-pointer hover:text-white" onClick={() => handleSort("rvol")}>RVOL / RSI</th>
-                        <th className="py-2.5 px-3 text-right cursor-pointer hover:text-white" onClick={() => handleSort("value_traded_b")}>Val (M)</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800/60">
-                      {filtered.slice(0, 200).map((s) => {
-                        const isActive = selected && selected.ticker === s.ticker;
-                        const isFav = watchlist.includes(s.ticker);
-                        return (
-                          <tr
-                            key={s.ticker}
-                            onClick={() => setSelectedTicker(s.ticker)}
-                            className={`cursor-pointer hover:bg-slate-800/60 transition ${isActive ? "bg-emerald-500/15 shadow-[inset_3px_0_0_#10b981]" : ""}`}
-                          >
-                            <td className="py-2.5 px-3">
-                              <div className="flex items-center gap-1.5">
-                                <button onClick={(e) => toggleWatchlist(e, s.ticker)} className={`text-sm leading-none ${isFav ? "text-amber-400" : "text-slate-600 hover:text-amber-300"}`}>★</button>
-                                <span className="font-mono font-bold text-white text-sm">{s.ticker}</span>
-                                {s.is_issi && <span className="px-1 text-[9px] font-bold rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">ISSI</span>}
-                              </div>
-                              <div className="text-[10px] text-slate-400 truncate max-w-[140px] pl-5">{s.name}</div>
-                            </td>
-                            <td className="py-2.5 px-2 text-right font-mono">
-                              <div className="font-bold text-white">{s.close.toLocaleString("id-ID")}</div>
-                              <div className={`text-[11px] font-bold ${s.change > 0 ? "text-emerald-400" : s.change < 0 ? "text-rose-400" : "text-slate-300"}`}>
-                                {s.change > 0 ? "+" : ""}{s.change}%
-                              </div>
-                            </td>
-                            <td className="py-2.5 px-2 text-right font-mono font-extrabold text-white">{s.alpha_score}</td>
-                            <td className="py-2.5 px-2">
-                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold border whitespace-nowrap ${sigBadge(s.signal_code)}`}>{s.signal}</span>
-                            </td>
-                            <td className="py-2.5 px-2 text-right font-mono">
-                              <div className="text-cyan-300">{s.plan.entry_low.toLocaleString("id-ID")}–{s.plan.entry_high.toLocaleString("id-ID")}</div>
-                              <div className="text-rose-400 text-[10px]">SL {s.plan.stop_loss.toLocaleString("id-ID")}</div>
-                            </td>
-                            <td className="py-2.5 px-2 text-right font-mono">
-                              <div className="text-emerald-400">{s.plan.tp1.toLocaleString("id-ID")} (+{s.plan.tp1_pct}%)</div>
-                              <div className="text-amber-300 text-[10px]">TP2 {s.plan.tp2.toLocaleString("id-ID")}</div>
-                            </td>
-                            <td className="py-2.5 px-2 text-right font-mono">
-                              <div className={s.rvol >= 1.5 ? "text-cyan-300 font-bold" : "text-slate-300"}>{s.rvol}x</div>
-                              <div className="text-[10px] text-slate-400">RSI {s.rsi}</div>
-                            </td>
-                            <td className="py-2.5 px-3 text-right font-mono text-slate-300">{s.value_traded_b.toFixed(1)}M</td>
+                <section className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
+                  <div className={`${expanded ? "xl:col-span-12 order-2" : "xl:col-span-7"} glass rounded-2xl overflow-hidden`}>
+                    <div className="px-4 py-3 border-b border-slate-800 flex justify-between text-xs">
+                      <span className="font-bold uppercase text-slate-300">Hasil Screening (<span className="text-emerald-400 font-mono">{filtered.length}</span> Saham)</span>
+                      <span className="text-slate-400">Klik ★ untuk Watchlist • Klik baris untuk Chart</span>
+                    </div>
+                    <div className="overflow-x-auto max-h-[760px] overflow-y-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-slate-900/95 sticky top-0 z-10 text-[11px] uppercase text-slate-400 border-b border-slate-800">
+                          <tr>
+                            <th className="py-2.5 px-3 cursor-pointer hover:text-white" onClick={() => handleSort("ticker")}>Saham</th>
+                            <th className="py-2.5 px-2 text-right cursor-pointer hover:text-white" onClick={() => handleSort("close")}>Harga</th>
+                            <th className="py-2.5 px-2 text-right cursor-pointer hover:text-white" onClick={() => handleSort("alpha_score")}>Skor α</th>
+                            <th className="py-2.5 px-2">Rekomendasi</th>
+                            <th className="py-2.5 px-2 text-right">Area Beli / SL</th>
+                            <th className="py-2.5 px-2 text-right">TP1 / TP2</th>
+                            <th className="py-2.5 px-2 text-right cursor-pointer hover:text-white" onClick={() => handleSort("rvol")}>RVOL / RSI</th>
+                            <th className="py-2.5 px-3 text-right cursor-pointer hover:text-white" onClick={() => handleSort("value_traded_b")}>Val (M)</th>
                           </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              {/* Detail + Chart */}
-              {selected && (
-                <div className={`${expanded ? "xl:col-span-12 order-1" : "xl:col-span-5 xl:sticky xl:top-20"} space-y-4`}>
-                  <div className="glass rounded-2xl p-4 space-y-3">
-                    <div className="flex justify-between items-start gap-2">
-                      <div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <h2 className="text-2xl font-extrabold font-mono text-white">IDX:{selected.ticker}</h2>
-                          {selected.is_issi && <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">☪ ISSI</span>}
-                          <span className={`px-2 py-0.5 text-[10px] font-bold rounded border ${sigBadge(selected.signal_code)}`}>{selected.signal}</span>
-                        </div>
-                        <p className="text-xs text-slate-400 mt-0.5">{selected.name} • {selected.sector}</p>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-2xl font-extrabold font-mono text-white">{fmtRp(selected.close)}</div>
-                        <div className={`text-xs font-mono font-bold ${selected.change >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-                          {selected.change > 0 ? "+" : ""}{selected.change}% • Val Rp {selected.value_traded_b} M
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                      <div className="rounded-xl bg-slate-900 border border-cyan-500/30 p-2.5"><div className="text-[10px] text-cyan-300 font-bold">AREA BELI</div><div className="text-xs font-mono font-bold text-white mt-0.5">{selected.plan.entry_low.toLocaleString("id-ID")}–{selected.plan.entry_high.toLocaleString("id-ID")}</div></div>
-                      <div className="rounded-xl bg-slate-900 border border-rose-500/30 p-2.5"><div className="text-[10px] text-rose-300 font-bold">CUT LOSS</div><div className="text-xs font-mono font-bold text-rose-400 mt-0.5">{selected.plan.stop_loss.toLocaleString("id-ID")} ({selected.plan.sl_pct}%)</div></div>
-                      <div className="rounded-xl bg-slate-900 border border-emerald-500/30 p-2.5"><div className="text-[10px] text-emerald-300 font-bold">TARGET 1</div><div className="text-xs font-mono font-bold text-emerald-400 mt-0.5">{selected.plan.tp1.toLocaleString("id-ID")} (+{selected.plan.tp1_pct}%)</div></div>
-                      <div className="rounded-xl bg-slate-900 border border-amber-500/30 p-2.5"><div className="text-[10px] text-amber-300 font-bold">TARGET 2</div><div className="text-xs font-mono font-bold text-amber-300 mt-0.5">{selected.plan.tp2.toLocaleString("id-ID")} (+{selected.plan.tp2_pct}%)</div></div>
-                    </div>
-
-                    <div className="text-xs text-slate-200 bg-slate-900/80 border border-slate-800 rounded-xl p-3">{selected.plan.note}</div>
-
-                    <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3 space-y-2">
-                      <div className="flex justify-between text-[11px] font-bold">
-                        <span className="text-slate-300">KALKULATOR LOT</span>
-                        <span className="font-mono text-emerald-400">R:R 1 : {selected.plan.rr}</span>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <input type="number" value={capital} step={1000000} onChange={(e) => setCapital(Number(e.target.value))} className="h-8 bg-slate-950 border border-slate-700 rounded-lg px-2.5 text-xs font-mono text-white" />
-                        <input type="number" value={riskPct} step={0.5} min={0.5} max={10} onChange={(e) => setRiskPct(Number(e.target.value))} className="h-8 bg-slate-950 border border-slate-700 rounded-lg px-2.5 text-xs font-mono text-white" />
-                      </div>
-                      {posCalc && (
-                        <div className="text-xs font-mono text-cyan-300">
-                          Beli Maks: <b className="text-white">{posCalc.lots} Lot</b> ({fmtRp(posCalc.val)}) • TP1: <b className="text-emerald-400">+{fmtRp(posCalc.profit)}</b> • SL: <b className="text-rose-400">-{fmtRp(posCalc.loss)}</b>
-                        </div>
-                      )}
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60">
+                          {filtered.slice(0, 200).map((s) => {
+                            const isActive = selected && selected.ticker === s.ticker;
+                            const isFav = watchlist.includes(s.ticker);
+                            return (
+                              <tr
+                                key={s.ticker}
+                                onClick={() => setSelectedTicker(s.ticker)}
+                                className={`cursor-pointer hover:bg-slate-800/60 transition ${isActive ? "bg-emerald-500/15 shadow-[inset_3px_0_0_#10b981]" : ""}`}
+                              >
+                                <td className="py-2.5 px-3">
+                                  <div className="flex items-center gap-1.5">
+                                    <button onClick={(e) => toggleWatchlist(e, s.ticker)} className={`text-sm leading-none ${isFav ? "text-amber-400" : "text-slate-600 hover:text-amber-300"}`}>★</button>
+                                    <span className="font-mono font-bold text-white text-sm">{s.ticker}</span>
+                                    {s.is_issi && <span className="px-1 text-[9px] font-bold rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">ISSI</span>}
+                                  </div>
+                                  <div className="text-[10px] text-slate-400 truncate max-w-[140px] pl-5">{s.name}</div>
+                                </td>
+                                <td className="py-2.5 px-2 text-right font-mono">
+                                  <div className="font-bold text-white">{s.close.toLocaleString("id-ID")}</div>
+                                  <div className={`text-[11px] font-bold ${s.change > 0 ? "text-emerald-400" : s.change < 0 ? "text-rose-400" : "text-slate-300"}`}>
+                                    {s.change > 0 ? "+" : ""}{s.change}%
+                                  </div>
+                                </td>
+                                <td className="py-2.5 px-2 text-right font-mono font-extrabold text-white">{s.alpha_score}</td>
+                                <td className="py-2.5 px-2">
+                                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold border whitespace-nowrap ${sigBadge(s.signal_code)}`}>{s.signal}</span>
+                                </td>
+                                <td className="py-2.5 px-2 text-right font-mono">
+                                  <div className="text-cyan-300">{s.plan.entry_low.toLocaleString("id-ID")}–{s.plan.entry_high.toLocaleString("id-ID")}</div>
+                                  <div className="text-rose-400 text-[10px]">SL {s.plan.stop_loss.toLocaleString("id-ID")}</div>
+                                </td>
+                                <td className="py-2.5 px-2 text-right font-mono">
+                                  <div className="text-emerald-400">{s.plan.tp1.toLocaleString("id-ID")} (+{s.plan.tp1_pct}%)</div>
+                                  <div className="text-amber-300 text-[10px]">TP2 {s.plan.tp2.toLocaleString("id-ID")}</div>
+                                </td>
+                                <td className="py-2.5 px-2 text-right font-mono">
+                                  <div className={s.rvol >= 1.5 ? "text-cyan-300 font-bold" : "text-slate-300"}>{s.rvol}x</div>
+                                  <div className="text-[10px] text-slate-400">RSI {s.rsi}</div>
+                                </td>
+                                <td className="py-2.5 px-3 text-right font-mono text-slate-300">{s.value_traded_b.toFixed(1)}M</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
                     </div>
                   </div>
 
-                  <div className="glass rounded-2xl overflow-hidden">
-                    <div className="px-4 py-2.5 border-b border-slate-800 flex justify-between items-center">
-                      <span className="text-xs font-bold text-white">Chart Live TradingView: <span className="text-emerald-400 font-mono">IDX:{selected.ticker}</span></span>
-                      <div className="flex items-center gap-2">
-                        <select value={interval} onChange={(e) => setIntervalTv(e.target.value)} className="h-7 bg-slate-900 border border-slate-700 rounded-md px-2 text-[11px] text-slate-200">
-                          <option value="15">15m</option>
-                          <option value="60">1 Jam</option>
-                          <option value="D">Daily</option>
-                          <option value="W">Weekly</option>
-                        </select>
-                        <button onClick={() => setExpanded(!expanded)} className="h-7 px-2.5 rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[11px] font-semibold text-slate-200 transition">
-                          {expanded ? "⤡ Perkecil" : "⤢ Perbesar"}
+                  {selected && (
+                    <div className={`${expanded ? "xl:col-span-12 order-1" : "xl:col-span-5 xl:sticky xl:top-20"} space-y-4`}>
+                      <div className="glass rounded-2xl p-4 space-y-3">
+                        <div className="flex justify-between items-start gap-2">
+                          <div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <h2 className="text-2xl font-extrabold font-mono text-white">IDX:{selected.ticker}</h2>
+                              {selected.is_issi && <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">☪ ISSI</span>}
+                              <span className={`px-2 py-0.5 text-[10px] font-bold rounded border ${sigBadge(selected.signal_code)}`}>{selected.signal}</span>
+                            </div>
+                            <p className="text-xs text-slate-400 mt-0.5">{selected.name} • {selected.sector}</p>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-2xl font-extrabold font-mono text-white">{fmtRp(selected.close)}</div>
+                            <div className={`text-xs font-mono font-bold ${selected.change >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                              {selected.change > 0 ? "+" : ""}{selected.change}% • Val Rp {selected.value_traded_b} M
+                            </div>
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={() => setActivePage("AI")}
+                          className="w-full h-9 rounded-xl bg-gradient-to-r from-violet-500/90 to-cyan-500/90 hover:brightness-110 text-xs font-extrabold text-white flex items-center justify-center gap-2 shadow-lg shadow-violet-500/15 transition"
+                        >
+                          <span>🤖</span><span>Buka Analisa AI Mendalam untuk IDX:{selected.ticker}</span>
                         </button>
+
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                          <div className="rounded-xl bg-slate-900 border border-cyan-500/30 p-2.5"><div className="text-[10px] text-cyan-300 font-bold">AREA BELI</div><div className="text-xs font-mono font-bold text-white mt-0.5">{selected.plan.entry_low.toLocaleString("id-ID")}–{selected.plan.entry_high.toLocaleString("id-ID")}</div></div>
+                          <div className="rounded-xl bg-slate-900 border border-rose-500/30 p-2.5"><div className="text-[10px] text-rose-300 font-bold">CUT LOSS</div><div className="text-xs font-mono font-bold text-rose-400 mt-0.5">{selected.plan.stop_loss.toLocaleString("id-ID")} ({selected.plan.sl_pct}%)</div></div>
+                          <div className="rounded-xl bg-slate-900 border border-emerald-500/30 p-2.5"><div className="text-[10px] text-emerald-300 font-bold">TARGET 1</div><div className="text-xs font-mono font-bold text-emerald-400 mt-0.5">{selected.plan.tp1.toLocaleString("id-ID")} (+{selected.plan.tp1_pct}%)</div></div>
+                          <div className="rounded-xl bg-slate-900 border border-amber-500/30 p-2.5"><div className="text-[10px] text-amber-300 font-bold">TARGET 2</div><div className="text-xs font-mono font-bold text-amber-300 mt-0.5">{selected.plan.tp2.toLocaleString("id-ID")} (+{selected.plan.tp2_pct}%)</div></div>
+                        </div>
+
+                        <div className="text-xs text-slate-200 bg-slate-900/80 border border-slate-800 rounded-xl p-3">{selected.plan.note}</div>
+
+                        <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3 space-y-2">
+                          <div className="flex justify-between text-[11px] font-bold">
+                            <span className="text-slate-300">KALKULATOR LOT</span>
+                            <span className="font-mono text-emerald-400">R:R 1 : {selected.plan.rr}</span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <input type="number" value={capital} step={1000000} onChange={(e) => setCapital(Number(e.target.value))} className="h-8 bg-slate-950 border border-slate-700 rounded-lg px-2.5 text-xs font-mono text-white" />
+                            <input type="number" value={riskPct} step={0.5} min={0.5} max={10} onChange={(e) => setRiskPct(Number(e.target.value))} className="h-8 bg-slate-950 border border-slate-700 rounded-lg px-2.5 text-xs font-mono text-white" />
+                          </div>
+                          {posCalc && (
+                            <div className="text-xs font-mono text-cyan-300">
+                              Beli Maks: <b className="text-white">{posCalc.lots} Lot</b> ({fmtRp(posCalc.val)}) • TP1: <b className="text-emerald-400">+{fmtRp(posCalc.profit)}</b> • SL: <b className="text-rose-400">-{fmtRp(posCalc.loss)}</b>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="glass rounded-2xl overflow-hidden">
+                        <div className="px-4 py-2.5 border-b border-slate-800 flex justify-between items-center">
+                          <span className="text-xs font-bold text-white">Chart Live TradingView: <span className="text-emerald-400 font-mono">IDX:{selected.ticker}</span></span>
+                          <div className="flex items-center gap-2">
+                            <select value={interval} onChange={(e) => setIntervalTv(e.target.value)} className="h-7 bg-slate-900 border border-slate-700 rounded-md px-2 text-[11px] text-slate-200">
+                              <option value="15">15m</option>
+                              <option value="60">1 Jam</option>
+                              <option value="D">Daily</option>
+                              <option value="W">Weekly</option>
+                            </select>
+                            <button onClick={() => setExpanded(!expanded)} className="h-7 px-2.5 rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[11px] font-semibold text-slate-200 transition">
+                              {expanded ? "⤡ Perkecil" : "⤢ Perbesar"}
+                            </button>
+                          </div>
+                        </div>
+                        <TradingViewChart ticker={selected.ticker} interval={interval} expanded={expanded} />
+                      </div>
+
+                      <div className="glass rounded-2xl overflow-hidden">
+                        <div className="px-4 py-2.5 border-b border-slate-800 text-xs font-bold text-slate-300">Speedometer Teknikal TradingView</div>
+                        <TradingViewGauge ticker={selected.ticker} />
                       </div>
                     </div>
-                    <TradingViewChart ticker={selected.ticker} interval={interval} expanded={expanded} />
-                  </div>
-
-                  <div className="glass rounded-2xl overflow-hidden">
-                    <div className="px-4 py-2.5 border-b border-slate-800 text-xs font-bold text-slate-300">Speedometer Teknikal TradingView</div>
-                    <TradingViewGauge ticker={selected.ticker} />
-                  </div>
-                </div>
-              )}
-            </section>
+                  )}
+                </section>
+              </>
+            )}
           </main>
 
           {showIssiModal && (

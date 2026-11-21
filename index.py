@@ -3,18 +3,22 @@ import math
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-app = FastAPI(title="ALPHA IDX • IHSG & ISSI Screener + AI")
+app = FastAPI(title="ALPHA IDX • IHSG & ISSI Screener + AI + Insider")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ISSI_REPO_FILE = os.path.join(BASE_DIR, "issi_list.txt")
 ISSI_TMP_FILE = "/tmp/issi_list.txt"
 
 CACHE_TTL = 25
+PROFILE_TTL = 300
 _cache = {"timestamp": 0, "data": None}
+_profile_cache = {}
+_yf_auth = {"timestamp": 0, "opener": None, "crumb": ""}
 
 DEFAULT_ISSI = {
     "AADI", "AALI", "ABMM", "ACES", "ADHI", "ADMR", "ADRO", "AGII", "AKRA", "ALDO",
@@ -448,6 +452,218 @@ def get_market_data(force=False):
     return payload
 
 
+def _get_yf_auth(force=False):
+    now = time.time()
+    if not force and _yf_auth["opener"] and _yf_auth["crumb"] and (now - _yf_auth["timestamp"] < 1500):
+        return _yf_auth["opener"], _yf_auth["crumb"]
+
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor())
+    opener.addheaders = [
+        ("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"),
+        ("Accept", "application/json,text/html,*/*"),
+    ]
+    try:
+        opener.open("https://fc.yahoo.com", timeout=7).read()
+    except Exception:
+        pass
+    crumb = opener.open("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=7).read().decode("utf-8").strip()
+    _yf_auth["timestamp"] = now
+    _yf_auth["opener"] = opener
+    _yf_auth["crumb"] = crumb
+    return opener, crumb
+
+
+def _fmt_raw(obj, key):
+    val = obj.get(key)
+    if isinstance(val, dict):
+        return val.get("raw"), val.get("fmt")
+    return val, str(val) if val is not None else None
+
+
+def fetch_yahoo_profile(ticker):
+    now = time.time()
+    cached = _profile_cache.get(ticker)
+    if cached and (now - cached["ts"] < PROFILE_TTL):
+        return cached["data"]
+
+    modules = ",".join([
+        "assetProfile",
+        "majorHoldersBreakdown",
+        "insiderHolders",
+        "insiderTransactions",
+        "institutionOwnership",
+        "fundOwnership",
+        "netSharePurchaseActivity",
+        "defaultKeyStatistics",
+    ])
+
+    result = {
+        "yahoo_ok": False,
+        "yahoo_note": "",
+        "summary": "",
+        "website": "",
+        "address": "",
+        "employees": None,
+        "officers": [],
+        "ownership": {
+            "insiders_pct": None,
+            "institutions_pct": None,
+            "public_float_pct": None,
+            "institutions_count": None,
+            "shares_outstanding": None,
+            "shares_outstanding_fmt": "-",
+            "float_shares": None,
+            "float_shares_fmt": "-",
+        },
+        "insider_holders": [],
+        "insider_transactions": [],
+        "net_insider_activity": None,
+        "institutions": [],
+        "funds": [],
+    }
+
+    try:
+        opener, crumb = _get_yf_auth()
+        url = (
+            f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{ticker}.JK"
+            f"?modules={urllib.parse.quote(modules)}&crumb={urllib.parse.quote(crumb)}"
+        )
+        try:
+            raw_json = opener.open(url, timeout=10).read().decode("utf-8")
+        except urllib.error.HTTPError as he:
+            if he.code in (401, 403):
+                opener, crumb = _get_yf_auth(force=True)
+                url = (
+                    f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{ticker}.JK"
+                    f"?modules={urllib.parse.quote(modules)}&crumb={urllib.parse.quote(crumb)}"
+                )
+                raw_json = opener.open(url, timeout=10).read().decode("utf-8")
+            else:
+                raise
+
+        parsed = json.loads(raw_json)
+        res_list = parsed.get("quoteSummary", {}).get("result") or []
+        if not res_list:
+            result["yahoo_note"] = "Data Yahoo Finance tidak tersedia untuk emiten ini."
+            return result
+
+        data = res_list[0]
+        result["yahoo_ok"] = True
+
+        ap = data.get("assetProfile") or {}
+        result["summary"] = ap.get("longBusinessSummary") or ""
+        result["website"] = ap.get("website") or ""
+        addr_parts = [ap.get("address1"), ap.get("city"), ap.get("country")]
+        result["address"] = ", ".join([p for p in addr_parts if p])
+        result["employees"] = ap.get("fullTimeEmployees")
+        result["officers"] = [
+            {
+                "name": o.get("name") or "-",
+                "title": o.get("title") or "-",
+                "age": o.get("age"),
+            }
+            for o in (ap.get("companyOfficers") or [])[:12]
+        ]
+
+        mhb = data.get("majorHoldersBreakdown") or {}
+        dks = data.get("defaultKeyStatistics") or {}
+        ins_raw, _ = _fmt_raw(mhb, "insidersPercentHeld")
+        if ins_raw is None:
+            ins_raw, _ = _fmt_raw(dks, "heldPercentInsiders")
+        inst_raw, _ = _fmt_raw(mhb, "institutionsPercentHeld")
+        if inst_raw is None:
+            inst_raw, _ = _fmt_raw(dks, "heldPercentInstitutions")
+        inst_cnt, _ = _fmt_raw(mhb, "institutionsCount")
+        sh_out, sh_out_fmt = _fmt_raw(dks, "sharesOutstanding")
+        fl_sh, fl_sh_fmt = _fmt_raw(dks, "floatShares")
+
+        ins_pct = round(ins_raw * 100, 2) if ins_raw is not None else None
+        inst_pct = round(inst_raw * 100, 2) if inst_raw is not None else None
+        pub_pct = round(max(0.0, 100.0 - (ins_pct or 0.0) - (inst_pct or 0.0)), 2) if (ins_pct is not None or inst_pct is not None) else None
+
+        result["ownership"] = {
+            "insiders_pct": ins_pct,
+            "institutions_pct": inst_pct,
+            "public_float_pct": pub_pct,
+            "institutions_count": int(inst_cnt) if inst_cnt is not None else None,
+            "shares_outstanding": sh_out,
+            "shares_outstanding_fmt": sh_out_fmt or "-",
+            "float_shares": fl_sh,
+            "float_shares_fmt": fl_sh_fmt or "-",
+        }
+
+        ih = (data.get("insiderHolders") or {}).get("holders") or []
+        result["insider_holders"] = [
+            {
+                "name": h.get("name") or "-",
+                "relation": h.get("relation") or "-",
+                "action": h.get("transactionDescription") or "-",
+                "date": (h.get("latestTransDate") or {}).get("fmt") or "-",
+                "shares": (h.get("positionDirect") or {}).get("fmt") or "-",
+            }
+            for h in ih[:12]
+        ]
+
+        itx = (data.get("insiderTransactions") or {}).get("transactions") or []
+        result["insider_transactions"] = [
+            {
+                "name": tx.get("filerName") or "-",
+                "relation": tx.get("filerRelation") or "-",
+                "text": tx.get("transactionText") or "-",
+                "shares": (tx.get("shares") or {}).get("fmt") or "-",
+                "value": (tx.get("value") or {}).get("fmt") or "-",
+                "date": (tx.get("startDate") or {}).get("fmt") or "-",
+                "ownership": tx.get("ownership") or "-",
+            }
+            for tx in itx[:15]
+        ]
+
+        nspa = data.get("netSharePurchaseActivity") or {}
+        if nspa:
+            b_cnt, _ = _fmt_raw(nspa, "buyInfoCount")
+            s_cnt, _ = _fmt_raw(nspa, "sellInfoCount")
+            _, b_sh = _fmt_raw(nspa, "buyInfoShares")
+            _, s_sh = _fmt_raw(nspa, "sellInfoShares")
+            _, n_sh = _fmt_raw(nspa, "netInfoShares")
+            if b_cnt is not None or s_cnt is not None:
+                result["net_insider_activity"] = {
+                    "period": nspa.get("period") or "6m",
+                    "buy_count": b_cnt or 0,
+                    "sell_count": s_cnt or 0,
+                    "buy_shares": b_sh or "0",
+                    "sell_shares": s_sh or "0",
+                    "net_shares": n_sh or "0",
+                }
+
+        io_list = (data.get("institutionOwnership") or {}).get("ownershipList") or []
+        result["institutions"] = [
+            {
+                "name": x.get("organization") or "-",
+                "pct": round(((_fmt_raw(x, "pctHeld")[0] or 0) * 100), 2),
+                "shares": (x.get("position") or {}).get("fmt") or "-",
+                "date": (x.get("reportDate") or {}).get("fmt") or "-",
+            }
+            for x in io_list[:10]
+        ]
+
+        fo_list = (data.get("fundOwnership") or {}).get("ownershipList") or []
+        result["funds"] = [
+            {
+                "name": x.get("organization") or "-",
+                "pct": round(((_fmt_raw(x, "pctHeld")[0] or 0) * 100), 2),
+                "shares": (x.get("position") or {}).get("fmt") or "-",
+                "date": (x.get("reportDate") or {}).get("fmt") or "-",
+            }
+            for x in fo_list[:10]
+        ]
+
+        _profile_cache[ticker] = {"ts": now, "data": result}
+    except Exception as e:
+        result["yahoo_note"] = f"Feed kepemilikan Yahoo Finance sementara dibatasi ({e}). Widget resmi TradingView di bawah tetap tampil live."
+
+    return result
+
+
 def build_quant_ai_report(s, all_stocks, question=""):
     peers = [x for x in all_stocks if x["sector"] == s["sector"] and x["value_traded_b"] >= 0.5]
     if not peers:
@@ -470,7 +686,6 @@ def build_quant_ai_report(s, all_stocks, question=""):
     ][:3]
 
     c, e20, e50, e200 = s["close"], s["ema20"], s["ema50"], s["ema200"]
-    # 1. Weinstein / Wyckoff Stage
     if c > e20 > e50 > e200:
         if s["rsi"] >= 74:
             stage = "Stage 3 • Overextended / Rawan Profit Taking"
@@ -492,7 +707,6 @@ def build_quant_ai_report(s, all_stocks, question=""):
         stage = "Stage 1 • Konsolidasi / Sideways Base"
         stage_desc = f"Harga bergerak mendatar di sekitar rata-rata EMA20–EMA50 (BB Width {s['bbw']}%). Menunggu katalis volume untuk menentukan arah."
 
-    # 2. Order Flow & Smart Money
     vwap_diff = round(((c - s["vwap"]) / s["vwap"]) * 100, 2) if s["vwap"] else 0
     if s["rvol"] >= 1.8 and c >= s["vwap"]:
         flow = f"Akumulasi Agresif: Volume melonjak {s['rvol']}x rata-rata 10 hari dengan harga bertahan +{vwap_diff}% di atas VWAP (Rp {s['vwap']:,}). Indikasi masuknya dana besar."
@@ -503,7 +717,6 @@ def build_quant_ai_report(s, all_stocks, question=""):
     else:
         flow = f"Volume Normal ({s['rvol']}x): Belum ada lonjakan dana institusi yang ekstrem. Posisi harga {vwap_diff:+.2f}% terhadap VWAP (Rp {s['vwap']:,})."
 
-    # 3. Fundamental & Syariah Audit
     pe_txt = f"PER {s['pe']}x" if s["pe"] is not None else "PER negatif/N/A"
     pbv_txt = f"PBV {s['pbv']}x" if s["pbv"] is not None else "PBV N/A"
     roe_txt = f"ROE {s['roe']}%" if s["roe"] is not None else "ROE N/A"
@@ -515,7 +728,6 @@ def build_quant_ai_report(s, all_stocks, question=""):
         + ("Valuasi tergolong menarik untuk fundamental jangka menengah." if (s["pe"] and 0 < s["pe"] <= 15 and (s["roe"] or 0) >= 10) else "Kinerja fundamental bersifat netral/siklikal, utamakan disiplin teknikal.")
     )
 
-    # 4. Risk Flags & Horizon
     risks = []
     if s["value_traded_b"] < 1.0:
         risks.append(f"Likuiditas tipis (Rp {s['value_traded_b']} M/hari) — rawan spread lebar & sulit keluar saat panik.")
@@ -544,7 +756,6 @@ def build_quant_ai_report(s, all_stocks, question=""):
         "bearish": f"Skenario batal jika harga jebol di bawah Stop Loss Rp {p['stop_loss']:,} ({p['sl_pct']}%) disertai volume jual besar. Wajib Cut Loss disiplin untuk lindungi modal.",
     }
 
-    # 5. Built-in Q&A Engine
     q = (question or "").strip().lower()
     if not q:
         qa_answer = f"Kesimpulan AI untuk {s['ticker']}: {s['signal']} (Skor α {s['alpha_score']}/100, Peringkat #{rank} dari {len(peers)} saham di sektor {s['sector']}). {p['note']}"
@@ -658,6 +869,20 @@ def scan(force: int = 0):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/profile")
+def stock_profile(ticker: str):
+    t = (ticker or "").upper().strip()
+    if not t:
+        return JSONResponse({"error": "Kode saham wajib diisi."}, status_code=400)
+    try:
+        market = get_market_data(force=False)
+        stock = next((x for x in market["stocks"] if x["ticker"] == t), None)
+        yf = fetch_yahoo_profile(t)
+        return {"ticker": t, "market": stock, "profile": yf}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.post("/api/ai-analyze")
 async def ai_analyze(request: Request):
     try:
@@ -708,3 +933,6 @@ async def save_issi(request: Request):
             f.write("\n".join(valid))
     _cache["data"] = None
     return {"saved": len(valid)}
+```
+
+---

@@ -7,7 +7,7 @@ import urllib.request
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-app = FastAPI(title="ALPHA IDX • IHSG & ISSI Screener")
+app = FastAPI(title="ALPHA IDX • IHSG & ISSI Screener + AI")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ISSI_REPO_FILE = os.path.join(BASE_DIR, "issi_list.txt")
@@ -194,6 +194,7 @@ def analyze_stock(row_dict, issi_set):
         atr = max(close * 0.025, high_p - low_p)
 
     high_52w = safe_num(row_dict.get("price_52_week_high"), close)
+    low_52w = safe_num(row_dict.get("price_52_week_low"), close)
     piv_s1 = safe_num(row_dict.get("Pivot.M.Classic.S1"), close * 0.95)
     piv_r1 = safe_num(row_dict.get("Pivot.M.Classic.R1"), close * 1.06)
     piv_r2 = safe_num(row_dict.get("Pivot.M.Classic.R2"), close * 1.12)
@@ -206,6 +207,8 @@ def analyze_stock(row_dict, issi_set):
     tot_debt = safe_num(row_dict.get("total_debt"))
     tot_assets = safe_num(row_dict.get("total_assets"))
     tv_rec = safe_num(row_dict.get("Recommend.All"), 0)
+    perf_w = safe_num(row_dict.get("Perf.W"), 0)
+    perf_1m = safe_num(row_dict.get("Perf.1M"), 0)
 
     sector = row_dict.get("sector") or "-"
     industry = row_dict.get("industry") or "-"
@@ -376,7 +379,12 @@ def analyze_stock(row_dict, issi_set):
         "pe": round(pe, 1) if pe is not None else None,
         "pbv": round(pbv, 2) if pbv is not None else None,
         "roe": round(roe, 1) if roe is not None else None,
+        "npm": round(npm, 1) if npm is not None else None,
         "div_yield": round(div_yield, 2),
+        "perf_w": round(perf_w, 2),
+        "perf_1m": round(perf_1m, 2),
+        "high_52w": round_fraksi_bei(high_52w),
+        "low_52w": round_fraksi_bei(low_52w),
         "tv_rec": round(tv_rec, 2),
         "alpha_score": alpha_score,
         "pillars": {
@@ -440,6 +448,194 @@ def get_market_data(force=False):
     return payload
 
 
+def build_quant_ai_report(s, all_stocks, question=""):
+    peers = [x for x in all_stocks if x["sector"] == s["sector"] and x["value_traded_b"] >= 0.5]
+    if not peers:
+        peers = [s]
+    peers_sorted = sorted(peers, key=lambda x: (x["alpha_score"], x["value_traded_b"]), reverse=True)
+    rank = next((i + 1 for i, x in enumerate(peers_sorted) if x["ticker"] == s["ticker"]), 1)
+    avg_sector_score = round(sum(x["alpha_score"] for x in peers) / len(peers), 1)
+    avg_sector_chg = round(sum(x["change"] for x in peers) / len(peers), 2)
+    top_peers = [
+        {
+            "ticker": x["ticker"],
+            "close": x["close"],
+            "change": x["change"],
+            "alpha_score": x["alpha_score"],
+            "signal": x["signal"],
+            "pe": x["pe"],
+            "roe": x["roe"],
+        }
+        for x in peers_sorted if x["ticker"] != s["ticker"]
+    ][:3]
+
+    c, e20, e50, e200 = s["close"], s["ema20"], s["ema50"], s["ema200"]
+    # 1. Weinstein / Wyckoff Stage
+    if c > e20 > e50 > e200:
+        if s["rsi"] >= 74:
+            stage = "Stage 3 • Overextended / Rawan Profit Taking"
+            stage_desc = f"Harga sudah jauh di atas EMA20 (Rp {e20:,}) dengan RSI {s['rsi']}. Tren masih naik, tetapi rawan koreksi sehat jangka pendek."
+        else:
+            stage = "Stage 2 • Markup / Uptrend Institusi"
+            stage_desc = f"Formasi sempurna: Harga (Rp {c:,}) > EMA20 ({e20:,}) > EMA50 ({e50:,}) > EMA200 ({e200:,}). Ini zona terbaik untuk mengikuti tren naik."
+    elif c > e20 and e20 <= e50:
+        stage = "Stage 1 → 2 • Transisi Akumulasi ke Breakout"
+        stage_desc = f"Harga mulai menembus EMA20 (Rp {e20:,}) dan bersiap membalikkan tren menengah (EMA50 Rp {e50:,})."
+    elif c < e50 and e20 < e50:
+        if s["is_rebound"]:
+            stage = "Stage 4 (Akhir) • Technical Rebound dari Jenuh Jual"
+            stage_desc = f"Tren utama masih di bawah EMA50 (Rp {e50:,}), namun muncul pantulan awal dari area oversold (RSI {s['rsi']}). Cocok untuk swing cepat, bukan hold pasif."
+        else:
+            stage = "Stage 4 • Markdown / Downtrend"
+            stage_desc = f"Harga berada di bawah EMA20 ({e20:,}) dan EMA50 ({e50:,}). Risiko tekanan jual masih dominan; tunggu base baru terbentuk."
+    else:
+        stage = "Stage 1 • Konsolidasi / Sideways Base"
+        stage_desc = f"Harga bergerak mendatar di sekitar rata-rata EMA20–EMA50 (BB Width {s['bbw']}%). Menunggu katalis volume untuk menentukan arah."
+
+    # 2. Order Flow & Smart Money
+    vwap_diff = round(((c - s["vwap"]) / s["vwap"]) * 100, 2) if s["vwap"] else 0
+    if s["rvol"] >= 1.8 and c >= s["vwap"]:
+        flow = f"Akumulasi Agresif: Volume melonjak {s['rvol']}x rata-rata 10 hari dengan harga bertahan +{vwap_diff}% di atas VWAP (Rp {s['vwap']:,}). Indikasi masuknya dana besar."
+    elif s["vwma_bull"] and c >= s["vwap"]:
+        flow = f"Aliran Dana Positif: VWMA lebih kuat dari SMA20 dan harga di atas VWAP (Rp {s['vwap']:,}), menandakan pembeli lebih dominan daripada penjual."
+    elif s["rvol"] >= 1.5 and s["change"] < -1.5:
+        flow = f"Distribusi / Tekanan Jual: Volume tinggi ({s['rvol']}x) disertai penurunan {s['change']}%. Waspadai lanjutan pelemahan."
+    else:
+        flow = f"Volume Normal ({s['rvol']}x): Belum ada lonjakan dana institusi yang ekstrem. Posisi harga {vwap_diff:+.2f}% terhadap VWAP (Rp {s['vwap']:,})."
+
+    # 3. Fundamental & Syariah Audit
+    pe_txt = f"PER {s['pe']}x" if s["pe"] is not None else "PER negatif/N/A"
+    pbv_txt = f"PBV {s['pbv']}x" if s["pbv"] is not None else "PBV N/A"
+    roe_txt = f"ROE {s['roe']}%" if s["roe"] is not None else "ROE N/A"
+    da_txt = f"Utang/Aset {s['debt_asset_ratio']}%" if s["debt_asset_ratio"] is not None else "Utang/Aset N/A"
+    syariah_status = "LOLOS SYARIAH ISSI" if s["is_issi"] else "NON-ISSI / PERLU CEK DES"
+    fund_audit = (
+        f"Status: {syariah_status} ({da_txt} vs batas OJK 45%). Valuasi saat ini {pe_txt}, {pbv_txt}, profitabilitas {roe_txt}, "
+        f"dengan Dividend Yield {s['div_yield']}%. "
+        + ("Valuasi tergolong menarik untuk fundamental jangka menengah." if (s["pe"] and 0 < s["pe"] <= 15 and (s["roe"] or 0) >= 10) else "Kinerja fundamental bersifat netral/siklikal, utamakan disiplin teknikal.")
+    )
+
+    # 4. Risk Flags & Horizon
+    risks = []
+    if s["value_traded_b"] < 1.0:
+        risks.append(f"Likuiditas tipis (Rp {s['value_traded_b']} M/hari) — rawan spread lebar & sulit keluar saat panik.")
+    if s["rsi"] >= 74:
+        risks.append(f"RSI Overbought ({s['rsi']}) — jangan kejar harga di pucuk, tunggu pullback ke EMA10/EMA20.")
+    if c < e50:
+        risks.append(f"Masih di bawah EMA50 (Rp {e50:,}) — tren menengah belum aman sepenuhnya.")
+    if s["plan"]["rr"] < 1.5:
+        risks.append(f"Risk:Reward hanya 1:{s['plan']['rr']} — ruang profit terbatas dibanding risiko SL.")
+    if not risks:
+        risks.append("Risiko teknikal & likuiditas relatif terkendali selama disiplin menjaga Stop Loss.")
+
+    if s["alpha_score"] >= 75 and c > e50:
+        horizon = "Swing Trading (1–4 Minggu) / Trend Following"
+    elif s["is_breakout"] or s["rvol"] >= 1.8:
+        horizon = "Day Trade / Fast Swing (2–7 Hari)"
+    elif s["pe"] is not None and 0 < s["pe"] <= 14 and (s["roe"] or 0) >= 12:
+        horizon = "Position / Value Investing (1–6 Bulan)"
+    else:
+        horizon = "Wait & See / Pantau Support"
+
+    p = s["plan"]
+    scenarios = {
+        "bullish": f"Jika menembus & bertahan di atas Rp {p['entry_high']:,} dengan RVOL ≥ 1.3x, target kenaikan bertahap menuju TP1 Rp {p['tp1']:,} (+{p['tp1_pct']}%) hingga TP2 Rp {p['tp2']:,} (+{p['tp2_pct']}%).",
+        "base": f"Jika terjadi konsolidasi sehat, area antre terbaik ada di Rp {p['entry_low']:,}–{p['entry_high']:,} (dekat VWAP/EMA20) agar Risk:Reward tetap 1:{p['rr']}.",
+        "bearish": f"Skenario batal jika harga jebol di bawah Stop Loss Rp {p['stop_loss']:,} ({p['sl_pct']}%) disertai volume jual besar. Wajib Cut Loss disiplin untuk lindungi modal.",
+    }
+
+    # 5. Built-in Q&A Engine
+    q = (question or "").strip().lower()
+    if not q:
+        qa_answer = f"Kesimpulan AI untuk {s['ticker']}: {s['signal']} (Skor α {s['alpha_score']}/100, Peringkat #{rank} dari {len(peers)} saham di sektor {s['sector']}). {p['note']}"
+    elif "hold" in q or "jangka" in q or "menengah" in q or "lama" in q:
+        qa_answer = (
+            f"Untuk hold jangka menengah pada {s['ticker']}: Posisi saat ini berada di '{stage}'. "
+            + (f"Struktur Stage-2 dan fundamental ({pe_txt}, {roe_txt}) mendukung untuk di-hold selama harga tidak turun menembus EMA50 (Rp {e50:,})."
+               if (c > e50 and (s["roe"] or 0) >= 8)
+               else f"Saat ini kurang ideal untuk hold pasif jangka panjang karena tren masih di bawah/baru menguji EMA50 (Rp {e50:,}). Lebih aman trading bertahap dengan Trailing Stop.")
+        )
+    elif "cut loss" in q or "average" in q or "cicil" in q or "entry" in q or "beli" in q:
+        qa_answer = (
+            f"Strategi Entry & Cut Loss {s['ticker']}: Jangan All-in sekaligus. Cicil 50% di area Rp {p['entry_low']:,}–{p['entry_high']:,}, dan sisa 50% hanya jika harga memantul kuat atau breakout. "
+            f"Hindari Average Down jika harga sudah menembus Stop Loss Rp {p['stop_loss']:,} ({p['sl_pct']}%). Pasang Trailing Stop di EMA10 (Rp {s['ema10']:,}) setelah profit di atas +5%."
+        )
+    elif "sektor" in q or "kompetitor" in q or "banding" in q:
+        peers_txt = ", ".join([f"{x['ticker']} (Skor {x['alpha_score']}, {x['change']:+.2f}%)" for x in top_peers]) or "tidak ada pembanding likuid"
+        qa_answer = (
+            f"Di sektor {s['sector']}, {s['ticker']} menempati peringkat #{rank} dari {len(peers)} emiten dengan Skor α {s['alpha_score']} "
+            f"(rata-rata sektor: {avg_sector_score}, rata-rata perubahan hari ini: {avg_sector_chg:+.2f}%). "
+            f"Kompetitor teratas di sektor yang sama: {peers_txt}."
+        )
+    elif "bandar" in q or "trap" in q or "risiko" in q or "jebakan" in q:
+        qa_answer = f"Analisa Jebakan / Risiko {s['ticker']}: {flow} Peringatan utama: {' '.join(risks)}"
+    else:
+        qa_answer = (
+            f"Analisa {s['ticker']} (Skor {s['alpha_score']}/100 • {s['signal']}): {stage_desc} "
+            f"{flow} Rencana eksekusi: Beli Rp {p['entry_low']:,}–{p['entry_high']:,}, SL Rp {p['stop_loss']:,}, TP1 Rp {p['tp1']:,}."
+        )
+
+    return {
+        "ticker": s["ticker"],
+        "conviction": min(98, max(20, round(s["alpha_score"] * 0.85 + (10 if s["value_traded_b"] >= 5 else 0) + (5 if s["plan"]["rr"] >= 2 else 0)))),
+        "horizon": horizon,
+        "stage": stage,
+        "stage_desc": stage_desc,
+        "order_flow": flow,
+        "fund_audit": fund_audit,
+        "risk_flags": risks,
+        "scenarios": scenarios,
+        "sector_context": {
+            "sector": s["sector"],
+            "rank": rank,
+            "total_peers": len(peers),
+            "avg_score": avg_sector_score,
+            "avg_change": avg_sector_chg,
+            "top_peers": top_peers,
+        },
+        "qa_answer": qa_answer,
+        "llm_used": False,
+        "llm_error": "",
+    }
+
+
+def call_gemini_ai(s, quant_report, question, api_key):
+    ctx = quant_report["sector_context"]
+    prompt = (
+        f"Kamu adalah analis riset ekuitas institusional pasar saham Indonesia (BEI/IDX) yang sangat tajam, objektif, dan berfokus pada manajemen risiko.\n"
+        f"Data LIVE TradingView untuk IDX:{s['ticker']} ({s['name']}):\n"
+        f"- Sektor: {s['sector']} (Peringkat #{ctx['rank']} dari {ctx['total_peers']} saham, rata-rata skor sektor {ctx['avg_score']})\n"
+        f"- Harga: Rp {s['close']:,} ({s['change']:+.2f}%), Transaksi: Rp {s['value_traded_b']} Miliar, RVOL: {s['rvol']}x\n"
+        f"- Teknikal: Skor Alpha {s['alpha_score']}/100, Sinyal {s['signal']}, Stage: {quant_report['stage']}, RSI {s['rsi']}, ADX {s['adx']}, VWAP Rp {s['vwap']:,}, EMA20 Rp {s['ema20']:,}, EMA50 Rp {s['ema50']:,}, EMA200 Rp {s['ema200']:,}\n"
+        f"- Fundamental & Syariah: ISSI={s['is_issi']}, Utang/Aset={s['debt_asset_ratio']}%, PER={s['pe']}x, PBV={s['pbv']}x, ROE={s['roe']}%, DivYield={s['div_yield']}%\n"
+        f"- Rencana Kuantitatif: Entry Rp {s['plan']['entry_low']:,}-{s['plan']['entry_high']:,}, Cut Loss Rp {s['plan']['stop_loss']:,} ({s['plan']['sl_pct']}%), TP1 Rp {s['plan']['tp1']:,}, TP2 Rp {s['plan']['tp2']:,}, R:R 1:{s['plan']['rr']}\n"
+        f"- Top Kompetitor Sektor: {json.dumps(ctx['top_peers'])}\n\n"
+        f"Pertanyaan/Permintaan User: {question or 'Berikan analisa mendalam prospek, kekuatan bandar/order flow, valuasi, risiko tersembunyi, dan strategi eksekusi terbaik untuk saham ini.'}\n\n"
+        f"Jawab dalam Bahasa Indonesia yang ringkas, terstruktur (pakai poin jelas), langsung ke angka konkret, dan ingatkan risiko secara objektif."
+    )
+    payload = json.dumps({
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 900},
+    }).encode("utf-8")
+
+    last_err = ""
+    for model in ("gemini-3.5-flash-lite", "gemini-3.5-flash"):
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json", "x-goog-api-key": api_key.strip()},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=18) as resp:
+                res = json.loads(resp.read().decode("utf-8"))
+            text = res["candidates"][0]["content"]["parts"][0]["text"]
+            return text, model, ""
+        except Exception as e:
+            last_err = str(e)
+    return None, "", last_err
+
+
 @app.get("/", response_class=HTMLResponse)
 def home():
     html_path = os.path.join(BASE_DIR, "react_ui.html")
@@ -458,6 +654,35 @@ def health():
 def scan(force: int = 0):
     try:
         return get_market_data(force=(force == 1))
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/ai-analyze")
+async def ai_analyze(request: Request):
+    try:
+        body = await request.json()
+        ticker = (body.get("ticker") or "").upper().strip()
+        question = body.get("question") or ""
+        user_key = (body.get("api_key") or "").strip()
+        api_key = user_key or os.environ.get("GEMINI_API_KEY", "").strip()
+
+        market = get_market_data(force=False)
+        stocks = market["stocks"]
+        s = next((x for x in stocks if x["ticker"] == ticker), None)
+        if not s:
+            return JSONResponse({"error": f"Saham {ticker} tidak ditemukan."}, status_code=404)
+
+        report = build_quant_ai_report(s, stocks, question)
+        if api_key:
+            llm_text, model_used, llm_err = call_gemini_ai(s, report, question, api_key)
+            if llm_text:
+                report["qa_answer"] = llm_text
+                report["llm_used"] = True
+                report["llm_model"] = model_used
+            else:
+                report["llm_error"] = f"Gemini fallback ke Quant AI ({llm_err})"
+        return report
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 

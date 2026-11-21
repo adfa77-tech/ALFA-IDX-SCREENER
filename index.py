@@ -8,7 +8,7 @@ import urllib.request
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-app = FastAPI(title="ALPHA IDX • IHSG & ISSI Screener + AI + Insider")
+app = FastAPI(title="ALPHA IDX")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ISSI_REPO_FILE = os.path.join(BASE_DIR, "issi_list.txt")
@@ -853,7 +853,10 @@ def home():
     if not os.path.exists(html_path):
         return HTMLResponse("<h3>File react_ui.html tidak ditemukan di repository.</h3>", status_code=500)
     with open(html_path, "r", encoding="utf-8") as f:
-        return f.read()
+        return HTMLResponse(
+            content=f.read(),
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+        )
 
 
 @app.get("/api/health")
@@ -933,6 +936,3 @@ async def save_issi(request: Request):
             f.write("\n".join(valid))
     _cache["data"] = None
     return {"saved": len(valid)}
-```
-
----

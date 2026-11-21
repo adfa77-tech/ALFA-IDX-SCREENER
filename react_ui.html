@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ALPHA IDX • IHSG & ISSI Screener + AI Analyst</title>
+  <title>ALPHA IDX • IHSG & ISSI Screener + AI + Profil Insider</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -135,6 +135,393 @@
       return <div ref={ref} className="w-full h-[380px] bg-slate-950" />;
     }
 
+    function TradingViewProfileWidget({ ticker }) {
+      const ref = useRef(null);
+      useEffect(() => {
+        if (!ticker || !ref.current) return;
+        ref.current.innerHTML = "";
+        const wrap = document.createElement("div");
+        wrap.className = "tradingview-widget-container";
+        wrap.style.height = "100%";
+        wrap.style.width = "100%";
+        const w = document.createElement("div");
+        w.className = "tradingview-widget-container__widget";
+        wrap.appendChild(w);
+        const s = document.createElement("script");
+        s.src = "https://s3.tradingview.com/external-embedding/embed-widget-symbol-profile.js";
+        s.async = true;
+        s.text = JSON.stringify({
+          width: "100%",
+          height: "100%",
+          isTransparent: true,
+          colorTheme: "dark",
+          symbol: "IDX:" + ticker,
+          locale: "id",
+        });
+        wrap.appendChild(s);
+        ref.current.appendChild(wrap);
+      }, [ticker]);
+      return <div ref={ref} className="w-full h-[420px] bg-slate-950" />;
+    }
+
+    function TradingViewFinancialsWidget({ ticker }) {
+      const ref = useRef(null);
+      useEffect(() => {
+        if (!ticker || !ref.current) return;
+        ref.current.innerHTML = "";
+        const wrap = document.createElement("div");
+        wrap.className = "tradingview-widget-container";
+        wrap.style.height = "100%";
+        wrap.style.width = "100%";
+        const w = document.createElement("div");
+        w.className = "tradingview-widget-container__widget";
+        wrap.appendChild(w);
+        const s = document.createElement("script");
+        s.src = "https://s3.tradingview.com/external-embedding/embed-widget-financials.js";
+        s.async = true;
+        s.text = JSON.stringify({
+          isTransparent: true,
+          largeChartUrl: "",
+          displayMode: "regular",
+          width: "100%",
+          height: "100%",
+          colorTheme: "dark",
+          symbol: "IDX:" + ticker,
+          locale: "id",
+        });
+        wrap.appendChild(s);
+        ref.current.appendChild(wrap);
+      }, [ticker]);
+      return <div ref={ref} className="w-full h-[640px] bg-slate-950" />;
+    }
+
+    function ProfileInsiderView({ stock, allStocks, onSelectTicker, onBackToChart }) {
+      const [profData, setProfData] = useState(null);
+      const [loading, setLoading] = useState(false);
+      const [err, setErr] = useState("");
+
+      const loadProfile = async (t) => {
+        if (!t) return;
+        setLoading(true);
+        setErr("");
+        try {
+          const res = await fetch(`/api/profile?ticker=${encodeURIComponent(t)}`);
+          const d = await res.json();
+          if (d.error) throw new Error(d.error);
+          setProfData(d);
+        } catch (e) {
+          setErr(e.message);
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      useEffect(() => {
+        if (stock) loadProfile(stock.ticker);
+      }, [stock && stock.ticker]);
+
+      if (!stock) {
+        return <div className="glass rounded-2xl p-8 text-center text-slate-400">Memuat data saham...</div>;
+      }
+
+      const p = profData && profData.profile ? profData.profile : null;
+      const own = p && p.ownership ? p.ownership : {};
+      const insPct = own.insiders_pct ?? 0;
+      const instPct = own.institutions_pct ?? 0;
+      const pubPct = own.public_float_pct ?? 0;
+
+      return (
+        <div className="space-y-5">
+          <div className="glass rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-400 to-emerald-500 flex items-center justify-center text-slate-950 text-lg font-extrabold shadow-lg shadow-amber-500/20">
+                🏢
+              </div>
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-base lg:text-lg font-extrabold text-white">Profil Emiten, Pemegang Saham & Insider • <span className="text-amber-300 font-mono">IDX:{stock.ticker}</span></h2>
+                  {stock.is_issi && <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">☪ ISSI</span>}
+                </div>
+                <p className="text-xs text-slate-400">{stock.name} • {stock.sector} • Market Cap Rp {stock.mcap_t} Triliun</p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={stock.ticker}
+                onChange={(e) => onSelectTicker(e.target.value)}
+                className="h-9 bg-slate-900 border border-slate-700 rounded-lg px-3 text-xs font-mono text-white focus:outline-none focus:border-amber-400"
+              >
+                {allStocks.slice(0, 180).map((x) => (
+                  <option key={x.ticker} value={x.ticker}>
+                    {x.ticker} — {x.name.slice(0, 28)}
+                  </option>
+                ))}
+              </select>
+              <a
+                href={`https://www.idx.co.id/id/perusahaan-tercatat/profil-perusahaan-tercatat/${stock.ticker}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="h-9 inline-flex items-center px-3 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-amber-300 transition"
+              >
+                🏛️ Keterbukaan BEI ↗
+              </a>
+              <button
+                onClick={() => loadProfile(stock.ticker)}
+                className="h-9 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-xs font-extrabold text-slate-950 transition"
+              >
+                ↻ Refresh Data
+              </button>
+              <button
+                onClick={onBackToChart}
+                className="h-9 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-slate-200 transition"
+              >
+                ← Kembali ke Chart
+              </button>
+            </div>
+          </div>
+
+          {err && <div className="glass rounded-xl p-3 border-rose-500/40 text-xs text-rose-300">Error: {err}</div>}
+          {p && p.yahoo_note && <div className="glass rounded-xl p-3 border-amber-500/30 text-xs text-amber-300">ℹ️ {p.yahoo_note}</div>}
+
+          <div className="glass rounded-2xl p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-xs font-bold uppercase text-amber-300">📊 Struktur Kepemilikan Saham & Free Float</div>
+              <div className="text-xs font-mono text-slate-400">
+                Saham Beredar: <b className="text-white">{own.shares_outstanding_fmt || "-"}</b> • Float: <b className="text-cyan-300">{own.float_shares_fmt || "-"}</b>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="rounded-xl bg-slate-900/90 border border-amber-500/30 p-3">
+                <div className="text-[11px] text-slate-400">Pengendali / Insider</div>
+                <div className="text-2xl font-extrabold font-mono text-amber-400 mt-1">{own.insiders_pct != null ? `${own.insiders_pct}%` : "-"}</div>
+              </div>
+              <div className="rounded-xl bg-slate-900/90 border border-cyan-500/30 p-3">
+                <div className="text-[11px] text-slate-400">Institusi / Fund</div>
+                <div className="text-2xl font-extrabold font-mono text-cyan-400 mt-1">{own.institutions_pct != null ? `${own.institutions_pct}%` : "-"}</div>
+                <div className="text-[10px] text-slate-500">{own.institutions_count != null ? `${own.institutions_count} institusi` : ""}</div>
+              </div>
+              <div className="rounded-xl bg-slate-900/90 border border-emerald-500/30 p-3">
+                <div className="text-[11px] text-slate-400">Estimasi Publik / Free Float</div>
+                <div className="text-2xl font-extrabold font-mono text-emerald-400 mt-1">{own.public_float_pct != null ? `${own.public_float_pct}%` : "-"}</div>
+              </div>
+              <div className="rounded-xl bg-slate-900/90 border border-slate-700 p-3">
+                <div className="text-[11px] text-slate-400">Valuasi & Syariah</div>
+                <div className="text-sm font-mono font-bold text-white mt-1.5">PER {stock.pe ?? "-"}x • PBV {stock.pbv ?? "-"}x</div>
+                <div className="text-[11px] text-emerald-300 mt-0.5">Debt/Asset: {stock.debt_asset_ratio != null ? `${stock.debt_asset_ratio}%` : "-"}</div>
+              </div>
+            </div>
+
+            {(own.insiders_pct != null || own.institutions_pct != null) && (
+              <div className="space-y-1">
+                <div className="w-full h-3 rounded-full bg-slate-800 overflow-hidden flex">
+                  <div style={{ width: `${insPct}%` }} className="bg-amber-400 h-full" title={`Insider ${insPct}%`} />
+                  <div style={{ width: `${instPct}%` }} className="bg-cyan-400 h-full" title={`Institusi ${instPct}%`} />
+                  <div style={{ width: `${pubPct}%` }} className="bg-emerald-400 h-full" title={`Publik ${pubPct}%`} />
+                </div>
+                <div className="flex flex-wrap gap-4 text-[10px] text-slate-400">
+                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-amber-400 inline-block" /> Insider ({insPct}%)</span>
+                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-cyan-400 inline-block" /> Institusi ({instPct}%)</span>
+                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-emerald-400 inline-block" /> Publik / Lainnya ({pubPct}%)</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {loading && <div className="glass rounded-xl p-6 text-center text-xs text-amber-300 animate-pulse">Mengambil data Direksi, Pemegang Saham & Transaksi Insider IDX:{stock.ticker}...</div>}
+
+          <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
+            <div className="xl:col-span-6 space-y-5">
+              <div className="glass rounded-2xl p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-bold uppercase text-cyan-300">🏢 Tentang Perusahaan & Manajemen</div>
+                  {p && p.website && (
+                    <a href={p.website} target="_blank" rel="noopener noreferrer" className="text-xs text-emerald-400 hover:underline font-mono">
+                      {p.website} ↗
+                    </a>
+                  )}
+                </div>
+                {p && p.address && (
+                  <div className="text-[11px] text-slate-400">
+                    📍 {p.address} {p.employees ? `• 👥 ${Number(p.employees).toLocaleString("id-ID")} Karyawan` : ""}
+                  </div>
+                )}
+                {p && p.summary ? (
+                  <p className="text-xs text-slate-300 leading-relaxed max-h-40 overflow-y-auto pr-1">{p.summary}</p>
+                ) : (
+                  <p className="text-xs text-slate-400">Ringkasan detail tersedia pada widget TradingView di bawah.</p>
+                )}
+
+                {p && p.officers && p.officers.length > 0 && (
+                  <div className="pt-2 border-t border-slate-800 space-y-2">
+                    <div className="text-[11px] font-bold uppercase text-slate-300">👔 Jajaran Direksi & Komisaris</div>
+                    <div className="overflow-x-auto max-h-56 overflow-y-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead className="text-[10px] uppercase text-slate-500 border-b border-slate-800">
+                          <tr><th className="py-1.5">Nama</th><th className="py-1.5">Jabatan</th><th className="py-1.5 text-right">Usia</th></tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60">
+                          {p.officers.map((o, idx) => (
+                            <tr key={idx}>
+                              <td className="py-1.5 font-semibold text-white">{o.name}</td>
+                              <td className="py-1.5 text-slate-300">{o.title}</td>
+                              <td className="py-1.5 text-right font-mono text-slate-400">{o.age ?? "-"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="glass rounded-2xl overflow-hidden">
+                <div className="px-4 py-2.5 border-b border-slate-800 text-xs font-bold text-slate-300">
+                  Profil Resmi TradingView (IDX:{stock.ticker})
+                </div>
+                <TradingViewProfileWidget ticker={stock.ticker} />
+              </div>
+            </div>
+
+            <div className="xl:col-span-6 space-y-5">
+              <div className="glass rounded-2xl p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-xs font-bold uppercase text-emerald-300">🕵️ Aktivitas & Pemegang Insider</div>
+                  {p && p.net_insider_activity && (
+                    <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-cyan-300">
+                      Beli: {p.net_insider_activity.buy_count}x ({p.net_insider_activity.buy_shares}) • Jual: {p.net_insider_activity.sell_count}x ({p.net_insider_activity.sell_shares})
+                    </span>
+                  )}
+                </div>
+
+                {p && p.insider_holders && p.insider_holders.length > 0 && (
+                  <div className="space-y-1.5">
+                    <div className="text-[11px] font-bold text-slate-400">Daftar Pemegang Insider / Direksi Tercatat</div>
+                    <div className="overflow-x-auto max-h-48 overflow-y-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead className="text-[10px] uppercase text-slate-500 border-b border-slate-800">
+                          <tr><th className="py-1.5">Nama</th><th className="py-1.5">Relasi</th><th className="py-1.5 text-right">Saham</th><th className="py-1.5 text-right">Tanggal</th></tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60">
+                          {p.insider_holders.map((h, idx) => (
+                            <tr key={idx}>
+                              <td className="py-1.5 font-semibold text-white">{h.name}</td>
+                              <td className="py-1.5 text-slate-300">{h.relation}</td>
+                              <td className="py-1.5 text-right font-mono text-amber-300">{h.shares}</td>
+                              <td className="py-1.5 text-right font-mono text-slate-400">{h.date}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                <div className="pt-2 border-t border-slate-800 space-y-1.5">
+                  <div className="text-[11px] font-bold text-slate-400">Riwayat Transaksi Insider Terbaru</div>
+                  {p && p.insider_transactions && p.insider_transactions.length > 0 ? (
+                    <div className="overflow-x-auto max-h-56 overflow-y-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead className="text-[10px] uppercase text-slate-500 border-b border-slate-800">
+                          <tr><th className="py-1.5">Pelaku</th><th className="py-1.5">Transaksi</th><th className="py-1.5 text-right">Lembar</th><th className="py-1.5 text-right">Tanggal</th></tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60">
+                          {p.insider_transactions.map((tx, idx) => {
+                            const txt = (tx.text || "").toLowerCase();
+                            const isBuy = txt.includes("buy") || txt.includes("purchase") || txt.includes("beli");
+                            const isSell = txt.includes("sell") || txt.includes("sale") || txt.includes("jual");
+                            return (
+                              <tr key={idx}>
+                                <td className="py-1.5">
+                                  <div className="font-semibold text-white">{tx.name}</div>
+                                  <div className="text-[10px] text-slate-400">{tx.relation}</div>
+                                </td>
+                                <td className={`py-1.5 font-semibold ${isBuy ? "text-emerald-400" : isSell ? "text-rose-400" : "text-slate-300"}`}>
+                                  {tx.text}
+                                </td>
+                                <td className="py-1.5 text-right font-mono text-white">{tx.shares}</td>
+                                <td className="py-1.5 text-right font-mono text-slate-400">{tx.date}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="text-xs text-slate-400 bg-slate-900/70 border border-slate-800 rounded-lg p-3 leading-relaxed">
+                      Belum ada feed transaksi insider otomatis untuk emiten ini di Yahoo Finance (umum untuk sebagian emiten BEI). Klik tombol <b>🏛️ Keterbukaan BEI ↗</b> di kanan atas untuk mengecek laporan kepemilikan ≥5% & direksi resmi dari Bursa Efek Indonesia.
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="glass rounded-2xl p-4 space-y-3">
+                <div className="text-xs font-bold uppercase text-cyan-300">🏛️ Top Pemegang Saham Institusi & Reksa Dana</div>
+                {p && ((p.institutions && p.institutions.length > 0) || (p.funds && p.funds.length > 0)) ? (
+                  <div className="space-y-3">
+                    {p.institutions && p.institutions.length > 0 && (
+                      <div>
+                        <div className="text-[11px] font-bold text-slate-400 mb-1">Top Institusi</div>
+                        <div className="overflow-x-auto max-h-48 overflow-y-auto">
+                          <table className="w-full text-left text-xs">
+                            <thead className="text-[10px] uppercase text-slate-500 border-b border-slate-800">
+                              <tr><th className="py-1.5">Institusi</th><th className="py-1.5 text-right">Porsi</th><th className="py-1.5 text-right">Lembar</th><th className="py-1.5 text-right">Laporan</th></tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-800/60">
+                              {p.institutions.map((ins, idx) => (
+                                <tr key={idx}>
+                                  <td className="py-1.5 font-semibold text-white">{ins.name}</td>
+                                  <td className="py-1.5 text-right font-mono text-cyan-300">{ins.pct}%</td>
+                                  <td className="py-1.5 text-right font-mono text-slate-200">{ins.shares}</td>
+                                  <td className="py-1.5 text-right font-mono text-slate-400">{ins.date}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                    {p.funds && p.funds.length > 0 && (
+                      <div className="pt-2 border-t border-slate-800">
+                        <div className="text-[11px] font-bold text-slate-400 mb-1">Top Reksa Dana / ETF</div>
+                        <div className="overflow-x-auto max-h-48 overflow-y-auto">
+                          <table className="w-full text-left text-xs">
+                            <thead className="text-[10px] uppercase text-slate-500 border-b border-slate-800">
+                              <tr><th className="py-1.5">Nama Fund</th><th className="py-1.5 text-right">Porsi</th><th className="py-1.5 text-right">Lembar</th><th className="py-1.5 text-right">Laporan</th></tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-800/60">
+                              {p.funds.map((fn, idx) => (
+                                <tr key={idx}>
+                                  <td className="py-1.5 font-semibold text-white">{fn.name}</td>
+                                  <td className="py-1.5 text-right font-mono text-emerald-300">{fn.pct}%</td>
+                                  <td className="py-1.5 text-right font-mono text-slate-200">{fn.shares}</td>
+                                  <td className="py-1.5 text-right font-mono text-slate-400">{fn.date}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-xs text-slate-400">Belum ada rincian institusi/fund dari feed publik untuk emiten ini.</div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="glass rounded-2xl overflow-hidden">
+            <div className="px-4 py-2.5 border-b border-slate-800 text-xs font-bold text-slate-300">
+              📑 Laporan Keuangan & Fundamental Resmi TradingView (Laba Rugi, Neraca, Arus Kas • IDX:{stock.ticker})
+            </div>
+            <TradingViewFinancialsWidget ticker={stock.ticker} />
+          </div>
+        </div>
+      );
+    }
+
     function DeepAiView({ stock, allStocks, onSelectTicker, onBackToChart }) {
       const [report, setReport] = useState(null);
       const [loading, setLoading] = useState(false);
@@ -185,7 +572,6 @@
 
       return (
         <div className="space-y-5">
-          {/* AI Control Header */}
           <div className="glass rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-violet-500 to-cyan-500 flex items-center justify-center text-white text-lg font-extrabold shadow-lg shadow-violet-500/20">
@@ -256,9 +642,7 @@
 
           {report && !loading && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-              {/* Kiri: Diagnosa Mendalam 8 Kolom */}
               <div className="lg:col-span-8 space-y-4">
-                {/* Summary Verdict Cards */}
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div className="glass rounded-xl p-4 border-violet-500/30">
                     <div className="text-[11px] uppercase text-slate-400 font-bold">AI Conviction Score</div>
@@ -279,7 +663,6 @@
                   </div>
                 </div>
 
-                {/* Diagnosa Stage, Order Flow, Valuasi */}
                 <div className="glass rounded-2xl p-5 space-y-4">
                   <div>
                     <div className="text-xs font-bold uppercase text-cyan-400">1. Fase Tren Pasar (Weinstein / Wyckoff)</div>
@@ -296,7 +679,6 @@
                   </div>
                 </div>
 
-                {/* 3 Skenario Probabilistik */}
                 <div className="glass rounded-2xl p-5 space-y-3">
                   <div className="text-xs font-bold uppercase text-slate-300">4. Playbook 3 Skenario Eksekusi</div>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -315,7 +697,6 @@
                   </div>
                 </div>
 
-                {/* Interactive Tanya AI Box */}
                 <div className="glass rounded-2xl p-5 space-y-3 border-violet-500/30">
                   <div className="flex items-center justify-between flex-wrap gap-2">
                     <div className="text-xs font-bold uppercase text-violet-300">
@@ -341,7 +722,7 @@
                       value={question}
                       onChange={(e) => setQuestion(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && runAnalysis(question)}
-                      placeholder={`Tanyakan apa saja tentang ${stock.ticker} (mis: apakah rawan bull trap?)...`}
+                      placeholder={`Tanyakan apa saja tentang ${stock.ticker}...`}
                       className="h-9 flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 text-xs text-white focus:outline-none focus:border-violet-400"
                     />
                     <button
@@ -358,7 +739,6 @@
                 </div>
               </div>
 
-              {/* Kanan: Red Flags & Top Kompetitor Sektor (4 Kolom) */}
               <div className="lg:col-span-4 space-y-4">
                 <div className="glass rounded-2xl p-4 space-y-2.5 border-rose-500/25">
                   <div className="text-xs font-bold uppercase text-rose-300">⚠️ Deteksi Risiko & Red Flags</div>
@@ -410,7 +790,7 @@
     }
 
     function App() {
-      const [activePage, setActivePage] = useState("SCREENER"); // SCREENER | AI
+      const [activePage, setActivePage] = useState("SCREENER");
       const [meta, setMeta] = useState({ updated_at: "-", total_scanned: 0, total_issi: 0, strong_buy_count: 0 });
       const [stocks, setStocks] = useState([]);
       const [loading, setLoading] = useState(true);
@@ -570,7 +950,6 @@
         <div className="min-h-screen flex flex-col">
           <TickerTape />
 
-          {/* Header + Menu Navigasi Utama */}
           <header className="px-4 lg:px-6 py-3.5 border-b border-slate-800/80 bg-slate-950/75 sticky top-0 z-30 backdrop-blur-xl">
             <div className="max-w-[1800px] mx-auto flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-3">
@@ -578,40 +957,45 @@
                 <div>
                   <div className="flex items-center gap-2">
                     <h1 className="text-lg font-extrabold text-white tracking-tight">ALPHA <span className="text-emerald-400">IDX</span> • IHSG & ISSI</h1>
-                    <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">LIVE + AI</span>
+                    <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">LIVE + AI + INSIDER</span>
                   </div>
-                  <p className="text-xs text-slate-400">5-Pillar Quant Engine • Deep AI Research • OJK Syariah • Fraksi BEI</p>
+                  <p className="text-xs text-slate-400">Quant Screener • Deep AI Analyst • Profil & Insider</p>
                 </div>
               </div>
 
-              {/* Menu Switcher */}
-              <div className="flex items-center gap-1.5 bg-slate-900/90 p-1 rounded-xl border border-slate-800">
+              <div className="flex flex-wrap items-center gap-1 bg-slate-900/90 p-1 rounded-xl border border-slate-800">
                 <button
                   onClick={() => setActivePage("SCREENER")}
-                  className={`h-8 px-3.5 rounded-lg text-xs font-bold transition ${activePage === "SCREENER" ? "bg-emerald-500 text-slate-950 shadow" : "text-slate-300 hover:text-white"}`}
+                  className={`h-8 px-3 rounded-lg text-xs font-bold transition ${activePage === "SCREENER" ? "bg-emerald-500 text-slate-950 shadow" : "text-slate-300 hover:text-white"}`}
                 >
                   📊 Screener & Chart
                 </button>
                 <button
                   onClick={() => setActivePage("AI")}
-                  className={`h-8 px-3.5 rounded-lg text-xs font-bold transition ${activePage === "AI" ? "bg-gradient-to-r from-violet-500 to-cyan-500 text-white shadow" : "text-slate-300 hover:text-white"}`}
+                  className={`h-8 px-3 rounded-lg text-xs font-bold transition ${activePage === "AI" ? "bg-gradient-to-r from-violet-500 to-cyan-500 text-white shadow" : "text-slate-300 hover:text-white"}`}
                 >
-                  🤖 Analisa AI Mendalam
+                  🤖 Analisa AI
+                </button>
+                <button
+                  onClick={() => setActivePage("PROFILE")}
+                  className={`h-8 px-3 rounded-lg text-xs font-bold transition ${activePage === "PROFILE" ? "bg-gradient-to-r from-amber-400 to-emerald-400 text-slate-950 shadow" : "text-slate-300 hover:text-white"}`}
+                >
+                  🏢 Profil & Insider
                 </button>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
                 <span className={`h-9 inline-flex items-center text-xs font-mono px-3 rounded-lg border ${error ? "bg-rose-500/10 border-rose-500/30 text-rose-300" : "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"}`}>
-                  {loading ? "Memuat data live..." : (error ? error : `LIVE • ${meta.updated_at}`)}
+                  {loading ? "Memuat data..." : (error ? error : `LIVE • ${meta.updated_at}`)}
                 </span>
-                <button onClick={openIssiModal} className="h-9 inline-flex items-center gap-1.5 px-3 text-xs font-semibold rounded-lg bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-emerald-300 transition">
+                <button onClick={openIssiModal} className="h-9 inline-flex items-center gap-1 px-3 text-xs font-semibold rounded-lg bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-emerald-300 transition">
                   ☪ ISSI
                 </button>
-                <button onClick={exportCsv} className="h-9 inline-flex items-center gap-1.5 px-3 text-xs font-semibold rounded-lg bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-slate-200 transition">
+                <button onClick={exportCsv} className="h-9 inline-flex items-center gap-1 px-3 text-xs font-semibold rounded-lg bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-slate-200 transition">
                   📥 CSV
                 </button>
-                <button onClick={() => fetchScan(true)} className="h-9 inline-flex items-center gap-1.5 px-3.5 text-xs font-extrabold rounded-lg bg-gradient-to-r from-emerald-400 to-cyan-400 hover:brightness-110 text-slate-950 shadow-lg shadow-emerald-500/20 transition">
-                  ↻ Scan Live
+                <button onClick={() => fetchScan(true)} className="h-9 inline-flex items-center gap-1 px-3.5 text-xs font-extrabold rounded-lg bg-gradient-to-r from-emerald-400 to-cyan-400 hover:brightness-110 text-slate-950 shadow-lg shadow-emerald-500/20 transition">
+                  ↻ Scan
                 </button>
               </div>
             </div>
@@ -620,6 +1004,13 @@
           <main className="flex-1 max-w-[1800px] w-full mx-auto p-4 lg:p-6 space-y-4">
             {activePage === "AI" ? (
               <DeepAiView
+                stock={selected}
+                allStocks={filtered.length > 0 ? filtered : stocks}
+                onSelectTicker={(t) => setSelectedTicker(t)}
+                onBackToChart={() => setActivePage("SCREENER")}
+              />
+            ) : activePage === "PROFILE" ? (
+              <ProfileInsiderView
                 stock={selected}
                 allStocks={filtered.length > 0 ? filtered : stocks}
                 onSelectTicker={(t) => setSelectedTicker(t)}
@@ -772,12 +1163,20 @@
                           </div>
                         </div>
 
-                        <button
-                          onClick={() => setActivePage("AI")}
-                          className="w-full h-9 rounded-xl bg-gradient-to-r from-violet-500/90 to-cyan-500/90 hover:brightness-110 text-xs font-extrabold text-white flex items-center justify-center gap-2 shadow-lg shadow-violet-500/15 transition"
-                        >
-                          <span>🤖</span><span>Buka Analisa AI Mendalam untuk IDX:{selected.ticker}</span>
-                        </button>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            onClick={() => setActivePage("AI")}
+                            className="h-9 rounded-xl bg-gradient-to-r from-violet-500/90 to-cyan-500/90 hover:brightness-110 text-xs font-extrabold text-white flex items-center justify-center gap-1.5 transition"
+                          >
+                            <span>🤖</span><span>Analisa AI ({selected.ticker})</span>
+                          </button>
+                          <button
+                            onClick={() => setActivePage("PROFILE")}
+                            className="h-9 rounded-xl bg-gradient-to-r from-amber-400/90 to-emerald-400/90 hover:brightness-110 text-xs font-extrabold text-slate-950 flex items-center justify-center gap-1.5 transition"
+                          >
+                            <span>🏢</span><span>Profil & Insider</span>
+                          </button>
+                        </div>
 
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                           <div className="rounded-xl bg-slate-900 border border-cyan-500/30 p-2.5"><div className="text-[10px] text-cyan-300 font-bold">AREA BELI</div><div className="text-xs font-mono font-bold text-white mt-0.5">{selected.plan.entry_low.toLocaleString("id-ID")}–{selected.plan.entry_high.toLocaleString("id-ID")}</div></div>

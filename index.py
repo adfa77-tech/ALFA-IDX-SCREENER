@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -57,6 +58,28 @@ NON_SYARIAH_TICKERS = {
 NON_SYARIAH_KEYWORDS = (
     "tobacco", "brewer", "distiller", "casino", "gambling", "insurance", "consumer finance"
 )
+
+SECTOR_ID_MAP = {
+    "Energy Minerals": "Energi & Pertambangan",
+    "Non-Energy Minerals": "Mineral & Logam Dasar",
+    "Finance": "Keuangan & Perbankan",
+    "Consumer Non-Durables": "Barang Konsumen Primer",
+    "Consumer Durables": "Barang Konsumen Sekunder",
+    "Consumer Services": "Jasa Konsumen",
+    "Retail Trade": "Perdagangan Ritel",
+    "Communications": "Komunikasi & Telko",
+    "Utilities": "Utilitas & Energi Terbarukan",
+    "Transportation": "Transportasi & Logistik",
+    "Industrial Services": "Jasa Industri & Konstruksi",
+    "Producer Manufacturing": "Manufaktur Industri",
+    "Process Industries": "Industri Pengolahan & Kimia",
+    "Health Technology": "Teknologi Kesehatan & Farmasi",
+    "Health Services": "Layanan Kesehatan & Rumah Sakit",
+    "Technology Services": "Layanan Teknologi & Digital",
+    "Electronic Technology": "Teknologi Elektronik",
+    "Commercial Services": "Jasa Komersial",
+    "Distribution Services": "Jasa Distribusi",
+}
 
 FULL_COLS = [
     "name", "description", "sector", "industry", "close", "open", "high", "low",
@@ -122,11 +145,44 @@ def safe_num(val, default=None):
         return default
 
 
+def _local_phrase_translate(text):
+    phrases = [
+        ("engages in the provision of", "bergerak di bidang penyediaan"),
+        ("engages in the", "bergerak dalam bidang"),
+        ("is engaged in", "bergerak di bidang"),
+        ("operates through the following segments:", "beroperasi melalui segmen berikut:"),
+        ("operates through", "beroperasi melalui"),
+        ("The company was founded", "Perusahaan ini didirikan"),
+        ("was founded in", "didirikan pada tahun"),
+        ("and is headquartered in", "dan berkantor pusat di"),
+        ("headquartered in", "berkantor pusat di"),
+        ("is a subsidiary of", "merupakan anak perusahaan dari"),
+        ("as a subsidiary of", "sebagai anak perusahaan dari"),
+        ("in Indonesia and internationally", "di Indonesia maupun internasional"),
+        ("in Indonesia", "di Indonesia"),
+        ("products and services", "produk dan layanan"),
+        ("banking products and services", "produk dan layanan perbankan"),
+        ("coal mining", "pertambangan batu bara"),
+        ("nickel mining", "pertambangan nikel"),
+        ("oil and gas", "minyak dan gas bumi"),
+        ("real estate", "properti dan real estat"),
+        ("telecommunications", "telekomunikasi"),
+        ("healthcare", "layanan kesehatan"),
+        ("retail", "ritel"),
+    ]
+    out = text
+    for en, idn in phrases:
+        out = re.sub(re.escape(en), idn, out, flags=re.IGNORECASE)
+    return out
+
+
 def translate_to_id(text):
     if not text or not text.strip():
         return ""
+    clean = text.strip()[:1800]
+
     try:
-        data = urllib.parse.urlencode({"q": text[:3000]}).encode("utf-8")
+        data = urllib.parse.urlencode({"q": clean}).encode("utf-8")
         req = urllib.request.Request(
             "https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=id&dt=t",
             data=data,
@@ -134,10 +190,40 @@ def translate_to_id(text):
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
             parsed = json.loads(resp.read().decode("utf-8"))
-        translated = "".join(chunk[0] for chunk in parsed[0] if chunk and chunk[0])
-        return translated or text
+        res = "".join(chunk[0] for chunk in parsed[0] if chunk and chunk[0])
+        if res and res.strip().lower() != clean.lower():
+            return res
     except Exception:
-        return text
+        pass
+
+    try:
+        sentences = re.split(r"(?<=[.!?])\s+", clean)
+        chunks, cur = [], ""
+        for sent in sentences:
+            if len(cur) + len(sent) + 1 <= 440:
+                cur = (cur + " " + sent).strip()
+            else:
+                if cur:
+                    chunks.append(cur)
+                cur = sent[:440]
+        if cur:
+            chunks.append(cur)
+
+        out_parts = []
+        for ch in chunks[:4]:
+            url = "https://api.mymemory.translated.net/get?" + urllib.parse.urlencode({"q": ch, "langpair": "en|id"})
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                j = json.loads(resp.read().decode("utf-8"))
+            t_txt = (j.get("responseData") or {}).get("translatedText") or ""
+            if t_txt and "MYMEMORY WARNING" not in t_txt.upper():
+                out_parts.append(t_txt)
+        if out_parts:
+            return " ".join(out_parts)
+    except Exception:
+        pass
+
+    return _local_phrase_translate(clean)
 
 
 def translate_role(title):
@@ -258,12 +344,13 @@ def analyze_stock(row_dict, issi_set):
     perf_w = safe_num(row_dict.get("Perf.W"), 0)
     perf_1m = safe_num(row_dict.get("Perf.1M"), 0)
 
-    sector = row_dict.get("sector") or "-"
+    sector_raw = row_dict.get("sector") or "-"
+    sector = SECTOR_ID_MAP.get(sector_raw, sector_raw)
     industry = row_dict.get("industry") or "-"
     desc = row_dict.get("description") or ticker
 
     debt_asset_ratio = round((tot_debt / tot_assets) * 100, 1) if (tot_debt is not None and tot_assets and tot_assets > 0) else None
-    ind_lower = (industry + " " + sector).lower()
+    ind_lower = (industry + " " + sector_raw).lower()
     is_haram = any(k in ind_lower for k in NON_SYARIAH_KEYWORDS) or ("bank" in ind_lower and ticker not in {"BRIS", "BTPS", "PNBS", "BANK"})
     in_issi_list = ticker in issi_set
     is_issi = in_issi_list and (ticker not in NON_SYARIAH_TICKERS) and (not is_haram) and (True if debt_asset_ratio is None else debt_asset_ratio <= 45.0)
@@ -524,7 +611,7 @@ def _fmt_raw(obj, key):
     return val, str(val) if val is not None else None
 
 
-def fetch_yahoo_profile(ticker):
+def fetch_yahoo_profile(ticker, stock_obj=None):
     now = time.time()
     cached = _profile_cache.get(ticker)
     if cached and (now - cached["ts"] < PROFILE_TTL):
@@ -541,10 +628,17 @@ def fetch_yahoo_profile(ticker):
         "defaultKeyStatistics",
     ])
 
+    fallback_summary = ""
+    if stock_obj:
+        fallback_summary = (
+            f"{stock_obj['name']} (kode IDX:{ticker}) adalah emiten tercatat di Bursa Efek Indonesia yang bergerak di sektor "
+            f"{stock_obj['sector']} (sub-industri: {stock_obj['industry']}), dengan kapitalisasi pasar sekitar Rp {stock_obj['mcap_t']} Triliun."
+        )
+
     result = {
         "yahoo_ok": False,
         "yahoo_note": "",
-        "summary": "",
+        "summary": fallback_summary,
         "website": "",
         "address": "",
         "employees": None,
@@ -588,7 +682,7 @@ def fetch_yahoo_profile(ticker):
         parsed = json.loads(raw_json)
         res_list = parsed.get("quoteSummary", {}).get("result") or []
         if not res_list:
-            result["yahoo_note"] = "Data Yahoo Finance tidak tersedia untuk emiten ini."
+            result["yahoo_note"] = "Data tambahan Yahoo Finance tidak tersedia untuk emiten ini."
             return result
 
         data = res_list[0]
@@ -596,7 +690,7 @@ def fetch_yahoo_profile(ticker):
 
         ap = data.get("assetProfile") or {}
         raw_summary = ap.get("longBusinessSummary") or ""
-        result["summary"] = translate_to_id(raw_summary) if raw_summary else ""
+        result["summary"] = translate_to_id(raw_summary) if raw_summary else fallback_summary
         result["website"] = ap.get("website") or ""
         addr_parts = [ap.get("address1"), ap.get("city"), ap.get("country")]
         result["address"] = ", ".join([p for p in addr_parts if p])
@@ -704,7 +798,7 @@ def fetch_yahoo_profile(ticker):
 
         _profile_cache[ticker] = {"ts": now, "data": result}
     except Exception as e:
-        result["yahoo_note"] = f"Feed kepemilikan Yahoo Finance sementara dibatasi ({e}). Ringkasan & laporan TradingView tetap tampil live."
+        result["yahoo_note"] = f"Feed kepemilikan Yahoo Finance sementara dibatasi ({e}). Ringkasan & statistik TradingView tetap tampil live."
 
     return result
 
@@ -925,7 +1019,7 @@ def stock_profile(ticker: str):
     try:
         market = get_market_data(force=False)
         stock = next((x for x in market["stocks"] if x["ticker"] == t), None)
-        yf = fetch_yahoo_profile(t)
+        yf = fetch_yahoo_profile(t, stock_obj=stock)
         return {"ticker": t, "market": stock, "profile": yf}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)

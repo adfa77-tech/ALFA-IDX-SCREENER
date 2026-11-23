@@ -8,9 +8,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from datetime import datetime
-from zoneinfo import ZoneInfo
-
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
@@ -20,19 +17,16 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ISSI_REPO_FILE = os.path.join(BASE_DIR, "issi_list.txt")
 ISSI_TMP_FILE = "/tmp/issi_list.txt"
 
-WIB = ZoneInfo("Asia/Jakarta")
-
-# TTL diperketat agar data bar & harga lebih responsif mengikuti sesi bursa
-CACHE_TTL = 15
+CACHE_TTL = 25
 PROFILE_TTL = 300
-OHLCV_TTL = 30
+OHLCV_TTL = 300
 NEWS_TTL = 300
 
-_cache = {"timestamp": 0.0, "data": None}
+_cache = {"timestamp": 0, "data": None}
 _profile_cache = {}
 _ohlcv_cache = {}
 _news_cache = {}
-_yf_auth = {"timestamp": 0.0, "opener": None, "crumb": ""}
+_yf_auth = {"timestamp": 0, "opener": None, "crumb": ""}
 
 DEFAULT_ISSI = {
     "AADI", "AALI", "ABMM", "ACES", "ADHI", "ADMR", "ADRO", "AGII", "AKRA", "ALDO",
@@ -99,7 +93,6 @@ POS_NEWS_WORDS = (
     "ekspansi", "akuisisi", "kontrak", "proyek", "buyback", "rekomendasi beli",
     "target harga", "akumulasi", "tumbuh", "positif", "surplus", "terbang", "rally",
 )
-
 NEG_NEWS_WORDS = (
     "turun", "anjlok", "ambruk", "melemah", "rugi", "koreksi", "utang", "gagal bayar",
     "pkpu", "pailit", "suspensi", "uma", "jual", "distribusi", "tertekan", "merosot",
@@ -119,25 +112,16 @@ FULL_COLS = [
     "net_margin_ttm", "debt_to_equity", "total_debt", "total_assets",
 ]
 
-# Menyertakan VWAP agar fallback tidak kehilangan referensi VWAP
 SAFE_COLS = [
     "name", "description", "sector", "industry", "close", "open", "high", "low",
     "change", "volume", "average_volume_10d_calc", "relative_volume_10d_calc",
     "market_cap_basic", "RSI", "RSI[1]", "Stoch.K", "Stoch.D", "MACD.macd",
     "MACD.signal", "EMA10", "EMA20", "EMA50", "EMA200", "SMA20", "SMA50", "SMA200",
-    "ADX", "ADX+DI", "ADX-DI", "BB.upper", "BB.lower", "ATR", "VWAP", "VWMA",
+    "ADX", "ADX+DI", "ADX-DI", "BB.upper", "BB.lower", "ATR", "VWMA",
     "Recommend.All", "Perf.W", "Perf.1M", "price_52_week_high", "price_52_week_low",
     "Pivot.M.Classic.S1", "Pivot.M.Classic.R1", "Pivot.M.Classic.R2",
     "price_earnings_ttm", "price_book_fq",
 ]
-
-
-def now_wib_str() -> str:
-    return datetime.now(WIB).strftime("%Y-%m-%d %H:%M:%S WIB")
-
-
-def ts_to_wib_date(ts: float) -> str:
-    return datetime.fromtimestamp(ts, tz=WIB).strftime("%Y-%m-%d")
 
 
 def load_issi_set():
@@ -146,10 +130,7 @@ def load_issi_set():
         if os.path.exists(path):
             try:
                 with open(path, "r", encoding="utf-8") as f:
-                    tokens = [
-                        t.strip().upper().replace("IDX:", "")
-                        for t in f.read().replace(",", "\n").splitlines()
-                    ]
+                    tokens = [t.strip().upper().replace("IDX:", "") for t in f.read().replace(",", "\n").splitlines()]
                 custom = {t for t in tokens if 3 <= len(t) <= 5 and t.isalpha()}
                 if custom:
                     return custom
@@ -217,6 +198,7 @@ def translate_to_id(text):
     if not text or not text.strip():
         return ""
     clean = text.strip()[:1800]
+
     try:
         data = urllib.parse.urlencode({"q": clean}).encode("utf-8")
         req = urllib.request.Request(
@@ -231,6 +213,7 @@ def translate_to_id(text):
             return res
     except Exception:
         pass
+
     try:
         sentences = re.split(r"(?<=[.!?])\s+", clean)
         chunks, cur = [], ""
@@ -243,6 +226,7 @@ def translate_to_id(text):
                 cur = sent[:440]
         if cur:
             chunks.append(cur)
+
         out_parts = []
         for ch in chunks[:4]:
             url = "https://api.mymemory.translated.net/get?" + urllib.parse.urlencode({"q": ch, "langpair": "en|id"})
@@ -256,6 +240,7 @@ def translate_to_id(text):
             return " ".join(out_parts)
     except Exception:
         pass
+
     return _local_phrase_translate(clean)
 
 
@@ -345,10 +330,7 @@ def analyze_stock(row_dict, issi_set):
     ema50 = safe_num(row_dict.get("EMA50"), close)
     ema200 = safe_num(row_dict.get("EMA200"), ema50)
     sma20 = safe_num(row_dict.get("SMA20"), ema20)
-    hlc3 = (high_p + low_p + close) / 3.0
-    vwap = safe_num(row_dict.get("VWAP"), hlc3)
-    if vwap is None or vwap <= 0:
-        vwap = hlc3
+    vwap = safe_num(row_dict.get("VWAP"), (high_p + low_p + close) / 3)
     vwma = safe_num(row_dict.get("VWMA"), sma20)
 
     adx = safe_num(row_dict.get("ADX"), 15)
@@ -357,7 +339,7 @@ def analyze_stock(row_dict, issi_set):
 
     bb_up = safe_num(row_dict.get("BB.upper"), close * 1.05)
     bb_low = safe_num(row_dict.get("BB.lower"), close * 0.95)
-    bbw = (bb_up - bb_low) / sma20 if sma20 and sma20 > 0 else 0.15
+    bbw = (bb_up - bb_low) / sma20 if sma20 > 0 else 0.15
 
     atr = safe_num(row_dict.get("ATR"))
     if not atr or atr <= 0:
@@ -385,22 +367,11 @@ def analyze_stock(row_dict, issi_set):
     industry = row_dict.get("industry") or "-"
     desc = row_dict.get("description") or ticker
 
-    debt_asset_ratio = (
-        round((tot_debt / tot_assets) * 100, 1)
-        if (tot_debt is not None and tot_assets and tot_assets > 0)
-        else None
-    )
+    debt_asset_ratio = round((tot_debt / tot_assets) * 100, 1) if (tot_debt is not None and tot_assets and tot_assets > 0) else None
     ind_lower = (industry + " " + sector_raw).lower()
-    is_haram = any(k in ind_lower for k in NON_SYARIAH_KEYWORDS) or (
-        "bank" in ind_lower and ticker not in {"BRIS", "BTPS", "PNBS", "BANK"}
-    )
+    is_haram = any(k in ind_lower for k in NON_SYARIAH_KEYWORDS) or ("bank" in ind_lower and ticker not in {"BRIS", "BTPS", "PNBS", "BANK"})
     in_issi_list = ticker in issi_set
-    is_issi = (
-        in_issi_list
-        and (ticker not in NON_SYARIAH_TICKERS)
-        and (not is_haram)
-        and (True if debt_asset_ratio is None else debt_asset_ratio <= 45.0)
-    )
+    is_issi = in_issi_list and (ticker not in NON_SYARIAH_TICKERS) and (not is_haram) and (True if debt_asset_ratio is None else debt_asset_ratio <= 45.0)
 
     smart_score = 0
     tags = []
@@ -437,18 +408,8 @@ def analyze_stock(row_dict, issi_set):
 
     mom_score = 0
     is_squeeze = bbw <= 0.12
-    is_breakout = (
-        close > ema20
-        and rvol >= 1.3
-        and change > 1.2
-        and (is_squeeze or close >= bb_up * 0.985)
-    )
-    is_rebound = (
-        (26 <= rsi <= 43)
-        and (rsi > rsi_prev)
-        and (stoch_k > stoch_d)
-        and (close >= open_p)
-    )
+    is_breakout = close > ema20 and rvol >= 1.3 and change > 1.2 and (is_squeeze or close >= bb_up * 0.985)
+    is_rebound = (26 <= rsi <= 43) and (rsi > rsi_prev) and (stoch_k > stoch_d) and (close >= open_p)
     if is_breakout:
         mom_score += 10
         tags.append("Squeeze Breakout" if is_squeeze else "Breakout")
@@ -628,7 +589,7 @@ def get_market_data(force=False):
 
     results.sort(key=lambda x: (x["alpha_score"], x["value_traded_b"]), reverse=True)
     payload = {
-        "updated_at": now_wib_str(),
+        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S WIB", time.gmtime(now + 7 * 3600)),
         "total_scanned": len(results),
         "total_issi": sum(1 for r in results if r["is_issi"]),
         "strong_buy_count": sum(1 for r in results if r["signal_code"] in ("STRONG_BUY", "BUY_BREAKOUT")),
@@ -647,16 +608,10 @@ def fetch_yf_ohlcv(ticker, range_str="1y"):
     if cached and (now - cached["ts"] < OHLCV_TTL):
         return cached["bars"]
 
-    url = (
-        f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(ticker)}.JK"
-        f"?range={urllib.parse.quote(range_str)}&interval=1d&includePrePost=false"
-    )
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(ticker)}.JK?range={range_str}&interval=1d"
     req = urllib.request.Request(
         url,
-        headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "application/json",
-        },
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
     )
     with urllib.request.urlopen(req, timeout=8) as resp:
         data = json.loads(resp.read().decode("utf-8"))
@@ -664,7 +619,6 @@ def fetch_yf_ohlcv(ticker, range_str="1y"):
     res = (data.get("chart") or {}).get("result") or []
     if not res:
         return []
-
     r0 = res[0]
     ts_list = r0.get("timestamp") or []
     quote = ((r0.get("indicators") or {}).get("quote") or [{}])[0]
@@ -674,10 +628,8 @@ def fetch_yf_ohlcv(ticker, range_str="1y"):
     closes = quote.get("close") or []
     vols = quote.get("volume") or []
 
-    bars_by_date = {}
+    bars = []
     for i, ts in enumerate(ts_list):
-        if ts is None:
-            continue
         c = closes[i] if i < len(closes) else None
         o = opens[i] if i < len(opens) else c
         h = highs[i] if i < len(highs) else c
@@ -685,20 +637,15 @@ def fetch_yf_ohlcv(ticker, range_str="1y"):
         v = vols[i] if i < len(vols) else 0
         if c is None or o is None or h is None or l is None or c <= 0:
             continue
-        d_str = ts_to_wib_date(float(ts))
-        # Menjaga bar terbaru untuk tanggal WIB yang sama
-        bars_by_date[d_str] = {
-            "date": d_str,
+        bars.append({
+            "date": time.strftime("%Y-%m-%d", time.gmtime(ts + 7 * 3600)),
             "open": float(o),
             "high": float(h),
             "low": float(l),
             "close": float(c),
             "volume": float(v or 0),
-        }
-
-    bars = [bars_by_date[k] for k in sorted(bars_by_date.keys())]
-    if bars:
-        _ohlcv_cache[key] = {"ts": now, "bars": bars}
+        })
+    _ohlcv_cache[key] = {"ts": now, "bars": bars}
     return bars
 
 
@@ -708,16 +655,19 @@ def fetch_google_news_id(query_str, limit=8):
     if cached and (now - cached["ts"] < NEWS_TTL):
         return cached["items"]
 
-    url = "https://news.google.com/rss/search?" + urllib.parse.urlencode(
-        {"q": query_str, "hl": "id", "gl": "ID", "ceid": "ID:id"}
-    )
+    url = "https://news.google.com/rss/search?" + urllib.parse.urlencode({
+        "q": query_str,
+        "hl": "id",
+        "gl": "ID",
+        "ceid": "ID:id",
+    })
     items = []
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=7) as resp:
             xml_bytes = resp.read()
         root = ET.fromstring(xml_bytes)
-        for item in root.findall(".//channel/item")[:limit]:
+        for item in root.findall("./channel/item")[:limit]:
             title = (item.findtext("title") or "").strip()
             link = (item.findtext("link") or "").strip()
             pub = (item.findtext("pubDate") or "").strip()
@@ -732,16 +682,14 @@ def fetch_google_news_id(query_str, limit=8):
                 sent, sent_score = "Negatif", pos_cnt - neg_cnt
             else:
                 sent, sent_score = "Netral", 0
-            items.append(
-                {
-                    "title": title,
-                    "link": link,
-                    "published": pub[:22] if pub else "-",
-                    "source": source,
-                    "sentiment": sent,
-                    "score": sent_score,
-                }
-            )
+            items.append({
+                "title": title,
+                "link": link,
+                "published": pub[:22] if pub else "-",
+                "source": source,
+                "sentiment": sent,
+                "score": sent_score,
+            })
     except Exception:
         pass
 
@@ -826,12 +774,7 @@ def fetch_yahoo_profile(ticker, stock_obj=None):
         "net_insider_activity": None,
         "institutions": [],
         "funds": [],
-        "calendar": {
-            "ex_dividend": "-",
-            "dividend_date": "-",
-            "earnings_date": "-",
-            "dividend_rate": "-",
-        },
+        "calendar": {"ex_dividend": "-", "dividend_date": "-", "earnings_date": "-", "dividend_rate": "-"},
     }
 
     try:
@@ -867,7 +810,7 @@ def fetch_yahoo_profile(ticker, stock_obj=None):
         result["summary"] = translate_to_id(raw_summary) if raw_summary else fallback_summary
         result["website"] = ap.get("website") or ""
         addr_parts = [ap.get("address1"), ap.get("city"), ap.get("country")]
-        result["address"] = ", ".join(p for p in addr_parts if p)
+        result["address"] = ", ".join([p for p in addr_parts if p])
         result["employees"] = ap.get("fullTimeEmployees")
         result["officers"] = [
             {
@@ -890,13 +833,9 @@ def fetch_yahoo_profile(ticker, stock_obj=None):
         sh_out, sh_out_fmt = _fmt_raw(dks, "sharesOutstanding")
         fl_sh, fl_sh_fmt = _fmt_raw(dks, "floatShares")
 
-        ins_pct = round(float(ins_raw) * 100, 2) if ins_raw is not None else None
-        inst_pct = round(float(inst_raw) * 100, 2) if inst_raw is not None else None
-        pub_pct = (
-            round(max(0.0, 100.0 - (ins_pct or 0.0) - (inst_pct or 0.0)), 2)
-            if (ins_pct is not None or inst_pct is not None)
-            else None
-        )
+        ins_pct = round(ins_raw * 100, 2) if ins_raw is not None else None
+        inst_pct = round(inst_raw * 100, 2) if inst_raw is not None else None
+        pub_pct = round(max(0.0, 100.0 - (ins_pct or 0.0) - (inst_pct or 0.0)), 2) if (ins_pct is not None or inst_pct is not None) else None
 
         result["ownership"] = {
             "insiders_pct": ins_pct,
@@ -926,9 +865,7 @@ def fetch_yahoo_profile(ticker, stock_obj=None):
             {
                 "name": tx.get("filerName") or "-",
                 "relation": translate_role(tx.get("filerRelation") or "-"),
-                "text": (tx.get("transactionText") or "-")
-                .replace("Purchase", "Pembelian")
-                .replace("Sale", "Penjualan"),
+                "text": (tx.get("transactionText") or "-").replace("Purchase", "Pembelian").replace("Sale", "Penjualan"),
                 "shares": (tx.get("shares") or {}).get("fmt") or "-",
                 "value": (tx.get("value") or {}).get("fmt") or "-",
                 "date": (tx.get("startDate") or {}).get("fmt") or "-",
@@ -954,25 +891,27 @@ def fetch_yahoo_profile(ticker, stock_obj=None):
                     "net_shares": n_sh or "0",
                 }
 
-        def _parse_org_list(raw_list):
-            parsed_rows = []
-            for x in raw_list[:10]:
-                pct_val, _ = _fmt_raw(x, "pctHeld")
-                parsed_rows.append(
-                    {
-                        "name": x.get("organization") or "-",
-                        "pct": round(float(pct_val) * 100, 2) if pct_val is not None else 0.0,
-                        "shares": (x.get("position") or {}).get("fmt") or "-",
-                        "date": (x.get("reportDate") or {}).get("fmt") or "-",
-                    }
-                )
-            return parsed_rows
-
         io_list = (data.get("institutionOwnership") or {}).get("ownershipList") or []
-        result["institutions"] = _parse_org_list(io_list)
+        result["institutions"] = [
+            {
+                "name": x.get("organization") or "-",
+                "pct": round(((_fmt_raw(x, "pctHeld")[0] or 0) * 100), 2),
+                "shares": (x.get("position") or {}).get("fmt") or "-",
+                "date": (x.get("reportDate") or {}).get("fmt") or "-",
+            }
+            for x in io_list[:10]
+        ]
 
         fo_list = (data.get("fundOwnership") or {}).get("ownershipList") or []
-        result["funds"] = _parse_org_list(fo_list)
+        result["funds"] = [
+            {
+                "name": x.get("organization") or "-",
+                "pct": round(((_fmt_raw(x, "pctHeld")[0] or 0) * 100), 2),
+                "shares": (x.get("position") or {}).get("fmt") or "-",
+                "date": (x.get("reportDate") or {}).get("fmt") or "-",
+            }
+            for x in fo_list[:10]
+        ]
 
         cal = data.get("calendarEvents") or {}
         sd = data.get("summaryDetail") or {}
@@ -999,7 +938,6 @@ def compute_historical_context(bars):
     if not bars or len(bars) < 25:
         return {
             "available": False,
-            "last_bar_date": bars[-1]["date"] if bars else None,
             "ret_1m": None,
             "ret_3m": None,
             "ret_6m": None,
@@ -1009,7 +947,6 @@ def compute_historical_context(bars):
             "resistance_20d": None,
             "volatility_ann": None,
         }
-
     closes = [b["close"] for b in bars]
     last = closes[-1]
     ret_1m = round(((last / closes[-22]) - 1) * 100, 2) if len(closes) >= 22 else None
@@ -1018,14 +955,8 @@ def compute_historical_context(bars):
 
     recent_20 = bars[-20:]
     avg_vol_20 = sum(b["volume"] for b in recent_20) / len(recent_20)
-    acc_days = sum(
-        1 for i in range(1, len(recent_20))
-        if recent_20[i]["close"] > recent_20[i - 1]["close"] and recent_20[i]["volume"] >= avg_vol_20
-    )
-    dist_days = sum(
-        1 for i in range(1, len(recent_20))
-        if recent_20[i]["close"] < recent_20[i - 1]["close"] and recent_20[i]["volume"] >= avg_vol_20
-    )
+    acc_days = sum(1 for i in range(1, len(recent_20)) if recent_20[i]["close"] > recent_20[i - 1]["close"] and recent_20[i]["volume"] >= avg_vol_20)
+    dist_days = sum(1 for i in range(1, len(recent_20)) if recent_20[i]["close"] < recent_20[i - 1]["close"] and recent_20[i]["volume"] >= avg_vol_20)
     sup_20 = round_fraksi_bei(min(b["low"] for b in recent_20))
     res_20 = round_fraksi_bei(max(b["high"] for b in recent_20))
 
@@ -1039,7 +970,6 @@ def compute_historical_context(bars):
 
     return {
         "available": True,
-        "last_bar_date": bars[-1]["date"],
         "ret_1m": ret_1m,
         "ret_3m": ret_3m,
         "ret_6m": ret_6m,
@@ -1069,8 +999,7 @@ def build_quant_ai_report(s, all_stocks, hist_ctx, profile_ctx, news_items, ques
             "pe": x["pe"],
             "roe": x["roe"],
         }
-        for x in peers_sorted
-        if x["ticker"] != s["ticker"]
+        for x in peers_sorted if x["ticker"] != s["ticker"]
     ][:3]
 
     c, e20, e50, e200 = s["close"], s["ema20"], s["ema50"], s["ema200"]
@@ -1099,7 +1028,7 @@ def build_quant_ai_report(s, all_stocks, hist_ctx, profile_ctx, news_items, ques
     hist_flow = ""
     if hist_ctx.get("available"):
         hist_flow = (
-            f" Bar terakhir: {hist_ctx.get('last_bar_date')}. Dalam 20 hari bursa terakhir tercatat {hist_ctx['acc_days_20']} hari akumulasi vs "
+            f" Dalam 20 hari bursa terakhir tercatat {hist_ctx['acc_days_20']} hari akumulasi vs "
             f"{hist_ctx['dist_days_20']} hari distribusi (Return 3Bln: {hist_ctx['ret_3m']}%, 6Bln: {hist_ctx['ret_6m']}%, "
             f"Support 20D Rp {hist_ctx['support_20d']:,}, Resistance 20D Rp {hist_ctx['resistance_20d']:,})."
         )
@@ -1177,25 +1106,22 @@ def build_quant_ai_report(s, all_stocks, hist_ctx, profile_ctx, news_items, ques
             f"- Berita & Katalis: {news_summary}\n"
             f"- Eksekusi: {p['note']}"
         )
-    elif any(k in q for k in ("hold", "jangka", "menengah", "lama")):
+    elif "hold" in q or "jangka" in q or "menengah" in q or "lama" in q:
         qa_answer = (
             f"Analisa Hold Menengah {s['ticker']}: Fase saat ini '{stage}' (Return 6Bln: {hist_ctx.get('ret_6m', '-')}%). "
-            + (
-                f"Struktur Stage-2 dan fundamental ({pe_txt}, {roe_txt}) mendukung untuk di-hold selama harga bertahan di atas EMA50 (Rp {e50:,})."
-                if (c > e50 and (s["roe"] or 0) >= 8)
-                else f"Kurang aman untuk hold pasif jangka panjang karena tren masih di bawah/baru menguji EMA50 (Rp {e50:,}). Gunakan Trailing Stop."
-            )
+            + (f"Struktur Stage-2 dan fundamental ({pe_txt}, {roe_txt}) mendukung untuk di-hold selama harga bertahan di atas EMA50 (Rp {e50:,})."
+               if (c > e50 and (s["roe"] or 0) >= 8)
+               else f"Kurang aman untuk hold pasif jangka panjang karena tren masih di bawah/baru menguji EMA50 (Rp {e50:,}). Gunakan Trailing Stop.")
         )
-    elif any(k in q for k in ("cut loss", "average", "cicil", "entry", "beli")):
+    elif "cut loss" in q or "average" in q or "cicil" in q or "entry" in q or "beli" in q:
         qa_answer = (
-            f"Strategi Entry & Cut Loss {s['ticker']}: Cicil 50% di Rp {p['entry_low']:,}-{p['entry_high']:,} "
-            f"(Support 20D historis: Rp {hist_ctx.get('support_20d') or p['entry_low']:,}), sisa 50% saat konfirmasi mantul. "
+            f"Strategi Entry & Cut Loss {s['ticker']}: Cicil 50% di Rp {p['entry_low']:,}-{p['entry_high']:,} (Support 20D historis: Rp {hist_ctx.get('support_20d') or p['entry_low']:,}), sisa 50% saat konfirmasi mantul. "
             f"Wajib Cut Loss jika tutup di bawah Rp {p['stop_loss']:,} ({p['sl_pct']}%)."
         )
-    elif any(k in q for k in ("sektor", "kompetitor", "banding")):
-        peers_txt = ", ".join(f"{x['ticker']} (Skor {x['alpha_score']}, {x['change']:+.2f}%)" for x in top_peers) or "tidak ada pembanding likuid"
+    elif "sektor" in q or "kompetitor" in q or "banding" in q:
+        peers_txt = ", ".join([f"{x['ticker']} (Skor {x['alpha_score']}, {x['change']:+.2f}%)" for x in top_peers]) or "tidak ada pembanding likuid"
         qa_answer = f"Di sektor {s['sector']}, {s['ticker']} peringkat #{rank}/{len(peers)} (Skor {s['alpha_score']} vs rata-rata {avg_sector_score}). Kompetitor teratas: {peers_txt}."
-    elif any(k in q for k in ("bandar", "trap", "risiko", "jebakan")):
+    elif "bandar" in q or "trap" in q or "risiko" in q or "jebakan" in q:
         qa_answer = f"Cek Jebakan & Risiko {s['ticker']}: {flow} {news_summary} Peringatan: {' '.join(risks)}"
     else:
         qa_answer = f"Analisa {s['ticker']} ({s['signal']}): {stage_desc} {flow} {news_summary} Area Beli Rp {p['entry_low']:,}-{p['entry_high']:,}, SL Rp {p['stop_loss']:,}, TP1 Rp {p['tp1']:,}."
@@ -1251,29 +1177,25 @@ def call_gemini_ai(s, quant_report, question, api_key):
         f"Kamu adalah Kepala Riset Ekuitas Pasar Modal Indonesia (BEI/IDX). Lakukan analisa mendalam berbasis 4 sumber data berikut untuk IDX:{s['ticker']} ({s['name']}):\n"
         f"1) TRADINGVIEW LIVE: Harga Rp {s['close']:,} ({s['change']:+.2f}%), Val Rp {s['value_traded_b']}M, RVOL {s['rvol']}x, Alpha {s['alpha_score']}/100 ({s['signal']}), RSI {s['rsi']}, ADX {s['adx']}, VWAP Rp {s['vwap']:,}, EMA20/50/200={s['ema20']:,}/{s['ema50']:,}/{s['ema200']:,}.\n"
         f"   Sektor {s['sector']} (Peringkat #{ctx['rank']}/{ctx['total_peers']}, rata-rata skor {ctx['avg_score']}). Top Peers: {json.dumps(ctx['top_peers'])}\n"
-        f"2) HISTORIS 6 BULAN (Bar terakhir {hc.get('last_bar_date')}): Return 1M={hc.get('ret_1m')}%, 3M={hc.get('ret_3m')}%, 6M={hc.get('ret_6m')}%, Hari Akumulasi vs Distribusi (20D)={hc.get('acc_days_20')} vs {hc.get('dist_days_20')}, Support 20D Rp {hc.get('support_20d')}, Resistance 20D Rp {hc.get('resistance_20d')}, Volatilitas={hc.get('volatility_ann')}%.\n"
+        f"2) HISTORIS 6 BULAN: Return 1M={hc.get('ret_1m')}%, 3M={hc.get('ret_3m')}%, 6M={hc.get('ret_6m')}%, Hari Akumulasi vs Distribusi (20D)={hc.get('acc_days_20')} vs {hc.get('dist_days_20')}, Support 20D Rp {hc.get('support_20d')}, Resistance 20D Rp {hc.get('resistance_20d')}, Volatilitas={hc.get('volatility_ann')}%.\n"
         f"3) FUNDAMENTAL, SYARIAH & KEPEMILIKAN: ISSI={s['is_issi']}, Utang/Aset={s['debt_asset_ratio']}%, PER={s['pe']}x, PBV={s['pbv']}x, ROE={s['roe']}%, DivYield={s['div_yield']}%, Kepemilikan={json.dumps(quant_report['ownership'])}, Kalender={json.dumps(quant_report['calendar'])}.\n"
         f"4) BERITA MEDIA INDONESIA TERKINI:\n{news_block}\n\n"
         f"Rencana Kuantitatif: Beli Rp {s['plan']['entry_low']:,}-{s['plan']['entry_high']:,}, SL Rp {s['plan']['stop_loss']:,} ({s['plan']['sl_pct']}%), TP1 Rp {s['plan']['tp1']:,}, TP2 Rp {s['plan']['tp2']:,}, R:R 1:{s['plan']['rr']}.\n"
         f"Pertanyaan User: {question or 'Berikan riset ekuitas mendalam yang menghubungkan teknikal, jejak akumulasi historis, fundamental/kepemilikan, sentimen berita, skenario jebakan/risiko, dan rencana eksekusi terbaik.'}\n\n"
         f"Jawab dalam Bahasa Indonesia yang tajam, terstruktur (pakai poin bernomor), menyebut angka konkret, dan objektif terhadap risiko."
     )
-    payload = json.dumps(
-        {
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.4, "maxOutputTokens": 1100},
-        }
-    ).encode("utf-8")
+    payload = json.dumps({
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 1100},
+    }).encode("utf-8")
+
     last_err = ""
-    for model in ("gemini-2.5-flash", "gemini-2.5-flash-lite"):
+    for model in ("gemini-3.5-flash-lite", "gemini-3.5-flash"):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         req = urllib.request.Request(
             url,
             data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "x-goog-api-key": api_key.strip(),
-            },
+            headers={"Content-Type": "application/json", "x-goog-api-key": api_key.strip()},
         )
         try:
             with urllib.request.urlopen(req, timeout=18) as resp:
@@ -1291,70 +1213,61 @@ def run_backtest_sim(bars, strategy="BREAKOUT"):
 
     closes = [b["close"] for b in bars]
     vols = [b["volume"] for b in bars]
-    n_bars = len(bars)
 
-    # EMA20 & EMA50 diinisialisasi dengan SMA awal agar tidak bias di awal seri
-    init_20 = sum(closes[: min(20, n_bars)]) / min(20, n_bars)
-    init_50 = sum(closes[: min(50, n_bars)]) / min(50, n_bars)
-    ema20 = [init_20] * n_bars
-    ema50 = [init_50] * n_bars
-    k20, k50 = 2.0 / 21.0, 2.0 / 51.0
-    for i in range(1, n_bars):
-        ema20[i] = closes[i] * k20 + ema20[i - 1] * (1.0 - k20)
-        ema50[i] = closes[i] * k50 + ema50[i - 1] * (1.0 - k50)
+    ema20, ema50, rsi14, atr14 = [closes[0]], [closes[0]], [50.0] * len(bars), [closes[0] * 0.025] * len(bars)
+    k20, k50 = 2 / 21.0, 2 / 51.0
+    for i in range(1, len(bars)):
+        ema20.append(closes[i] * k20 + ema20[-1] * (1 - k20))
+        ema50.append(closes[i] * k50 + ema50[-1] * (1 - k50))
 
-    # Wilder's RSI(14) & ATR(14)
-    rsi14 = [50.0] * n_bars
-    atr14 = [closes[0] * 0.025] * n_bars
-    gains = [0.0] * n_bars
-    losses = [0.0] * n_bars
-    trs = [bars[0]["high"] - bars[0]["low"]] * n_bars
-    for i in range(1, n_bars):
+    gains, losses = [0.0], [0.0]
+    trs = [bars[0]["high"] - bars[0]["low"]]
+    for i in range(1, len(bars)):
         diff = closes[i] - closes[i - 1]
-        gains[i] = max(0.0, diff)
-        losses[i] = max(0.0, -diff)
-        trs[i] = max(
-            bars[i]["high"] - bars[i]["low"],
-            abs(bars[i]["high"] - closes[i - 1]),
-            abs(bars[i]["low"] - closes[i - 1]),
-        )
+        gains.append(max(0.0, diff))
+        losses.append(max(0.0, -diff))
+        tr = max(bars[i]["high"] - bars[i]["low"], abs(bars[i]["high"] - closes[i - 1]), abs(bars[i]["low"] - closes[i - 1]))
+        trs.append(tr)
 
-    if n_bars > 14:
-        avg_g = sum(gains[1:15]) / 14.0
-        avg_l = sum(losses[1:15]) / 14.0
-        avg_tr = sum(trs[1:15]) / 14.0
-        rsi14[14] = 100.0 if avg_l == 0 else (100.0 - (100.0 / (1.0 + avg_g / avg_l)))
-        atr14[14] = max(closes[14] * 0.015, avg_tr)
-        for i in range(15, n_bars):
-            avg_g = (avg_g * 13.0 + gains[i]) / 14.0
-            avg_l = (avg_l * 13.0 + losses[i]) / 14.0
-            avg_tr = (avg_tr * 13.0 + trs[i]) / 14.0
-            rsi14[i] = 100.0 if avg_l == 0 else (100.0 - (100.0 / (1.0 + avg_g / avg_l)))
-            atr14[i] = max(closes[i] * 0.015, avg_tr)
+    for i in range(14, len(bars)):
+        ag = sum(gains[i - 13:i + 1]) / 14.0
+        al = sum(losses[i - 13:i + 1]) / 14.0
+        rsi14[i] = 100.0 if al == 0 else (100.0 - (100.0 / (1.0 + ag / al)))
+        atr14[i] = max(closes[i] * 0.015, sum(trs[i - 13:i + 1]) / 14.0)
 
     equity = 100.0
     peak = 100.0
     max_dd = 0.0
     in_pos = False
     entry_p, sl_p, tp_p, entry_dt = 0.0, 0.0, 0.0, ""
-    pending_entry = False
     trades = []
     curve = []
     fee_roundtrip = 0.004
 
-    for i in range(52, n_bars):
+    for i in range(52, len(bars)):
         b = bars[i]
+        avg_v10 = sum(vols[i - 10:i]) / 10.0 if i >= 10 else vols[i]
+        rvol = (b["volume"] / avg_v10) if avg_v10 > 0 else 1.0
+        sma20 = sum(closes[i - 19:i + 1]) / 20.0
+        std20 = math.sqrt(sum((x - sma20) ** 2 for x in closes[i - 19:i + 1]) / 20.0)
+        bb_up = sma20 + 2 * std20
 
-        # Eksekusi entry pada open bar i jika sinyal muncul di penutupan bar i-1
-        if pending_entry and not in_pos:
-            in_pos = True
-            pending_entry = False
-            entry_p = b["open"] if b["open"] > 0 else b["close"]
-            entry_dt = b["date"]
-            sl_p = entry_p - 1.5 * atr14[i - 1]
-            tp_p = entry_p + 2.8 * atr14[i - 1]
+        if not in_pos:
+            sig = False
+            if strategy == "BREAKOUT":
+                sig = b["close"] > ema20[i] and rvol >= 1.3 and b["close"] > b["open"] and (b["close"] >= bb_up * 0.985 or b["close"] > max(closes[i - 10:i]))
+            elif strategy == "TREND":
+                sig = ema20[i] > ema50[i] and b["close"] > ema20[i] and closes[i - 1] <= ema20[i - 1]
+            elif strategy == "REBOUND":
+                sig = 25 <= rsi14[i] <= 42 and rsi14[i] > rsi14[i - 1] and b["close"] > b["open"]
 
-        if in_pos:
+            if sig:
+                in_pos = True
+                entry_p = b["close"]
+                entry_dt = b["date"]
+                sl_p = entry_p - 1.5 * atr14[i]
+                tp_p = entry_p + 2.8 * atr14[i]
+        else:
             exit_reason = None
             exit_p = b["close"]
             if b["low"] <= sl_p:
@@ -1381,28 +1294,6 @@ def run_backtest_sim(bars, strategy="BREAKOUT"):
                 })
                 in_pos = False
 
-        avg_v10 = sum(vols[i - 10:i]) / 10.0 if i >= 10 else vols[i]
-        rvol = (b["volume"] / avg_v10) if avg_v10 > 0 else 1.0
-        sma20 = sum(closes[i - 19:i + 1]) / 20.0
-        std20 = math.sqrt(sum((x - sma20) ** 2 for x in closes[i - 19:i + 1]) / 20.0)
-        bb_up = sma20 + 2.0 * std20
-
-        if not in_pos and not pending_entry and i < n_bars - 1:
-            sig = False
-            if strategy == "BREAKOUT":
-                sig = (
-                    b["close"] > ema20[i]
-                    and rvol >= 1.3
-                    and b["close"] > b["open"]
-                    and (b["close"] >= bb_up * 0.985 or b["close"] > max(closes[i - 10:i]))
-                )
-            elif strategy == "TREND":
-                sig = ema20[i] > ema50[i] and b["close"] > ema20[i] and closes[i - 1] <= ema20[i - 1]
-            elif strategy == "REBOUND":
-                sig = 25 <= rsi14[i] <= 42 and rsi14[i] > rsi14[i - 1] and b["close"] > b["open"]
-            if sig:
-                pending_entry = True
-
         mtm_eq = equity * (b["close"] / entry_p) if in_pos else equity
         peak = max(peak, mtm_eq)
         dd = ((mtm_eq / peak) - 1.0) * 100.0
@@ -1424,11 +1315,7 @@ def run_backtest_sim(bars, strategy="BREAKOUT"):
     wins = [t["return_pct"] for t in trades if t["return_pct"] > 0]
     losses_t = [abs(t["return_pct"]) for t in trades if t["return_pct"] <= 0]
     win_rate = round((len(wins) / len(trades)) * 100, 1) if trades else 0.0
-    pf = (
-        round(sum(wins) / sum(losses_t), 2)
-        if sum(losses_t) > 0
-        else (round(sum(wins), 2) if wins else 0.0)
-    )
+    pf = round(sum(wins) / sum(losses_t), 2) if sum(losses_t) > 0 else (round(sum(wins), 2) if wins else 0.0)
     bh_ret = round(((closes[-1] / closes[52]) - 1.0) * 100, 2)
 
     return {
@@ -1438,7 +1325,7 @@ def run_backtest_sim(bars, strategy="BREAKOUT"):
         "buy_hold_pct": bh_ret,
         "max_drawdown_pct": round(max_dd, 2),
         "profit_factor": pf,
-        "equity_curve": curve[::max(1, len(curve) // 120)],
+        "equity_curve": curve[::max(1, len(curve) // 90)],
         "trades": list(reversed(trades))[:25],
     }
 
@@ -1467,7 +1354,7 @@ def home():
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "wib_time": now_wib_str()}
+    return {"status": "ok"}
 
 
 @app.get("/api/scan")
@@ -1490,6 +1377,7 @@ def sectors():
             if sec == "-":
                 continue
             groups.setdefault(sec, []).append(s)
+
         out = []
         for sec, items in groups.items():
             n = len(items)
@@ -1500,6 +1388,7 @@ def sectors():
             avg_rvol = round(sum(x["rvol"] for x in items) / n, 2)
             tot_val = round(sum(x["value_traded_b"] for x in items), 1)
             issi_cnt = sum(1 for x in items if x["is_issi"])
+
             if avg_1m >= 0 and avg_w >= 0:
                 quad = "LEADING"
             elif avg_1m >= 0 and avg_w < 0:
@@ -1508,6 +1397,7 @@ def sectors():
                 quad = "IMPROVING"
             else:
                 quad = "LAGGING"
+
             top3 = sorted(items, key=lambda x: (x["alpha_score"], x["value_traded_b"]), reverse=True)[:3]
             out.append({
                 "sector": sec,
@@ -1520,17 +1410,9 @@ def sectors():
                 "avg_rvol": avg_rvol,
                 "total_val_b": tot_val,
                 "quadrant": quad,
-                "top_stocks": [
-                    {
-                        "ticker": x["ticker"],
-                        "close": x["close"],
-                        "change": x["change"],
-                        "alpha_score": x["alpha_score"],
-                        "is_issi": x["is_issi"],
-                    }
-                    for x in top3
-                ],
+                "top_stocks": [{"ticker": x["ticker"], "close": x["close"], "change": x["change"], "alpha_score": x["alpha_score"], "is_issi": x["is_issi"]} for x in top3],
             })
+
         out.sort(key=lambda x: (x["avg_alpha"], x["total_val_b"]), reverse=True)
         return {"updated_at": market["updated_at"], "sectors": out}
     except Exception as e:
@@ -1558,34 +1440,30 @@ def stock_news(ticker: str = "IHSG"):
         market = get_market_data(force=False)
         stock = next((x for x in market["stocks"] if x["ticker"] == t), None)
         q = "IHSG pasar saham Indonesia BEI" if t in ("IHSG", "ALL", "") else f"saham {t} BEI Indonesia"
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
             f_news = ex.submit(fetch_google_news_id, q, 10)
             f_prof = ex.submit(fetch_yahoo_profile, t, stock) if (stock and t not in ("IHSG", "ALL")) else None
             news_items = f_news.result()
             prof = f_prof.result() if f_prof else {}
+
         pos = sum(1 for n in news_items if n["sentiment"] == "Positif")
         neg = sum(1 for n in news_items if n["sentiment"] == "Negatif")
         net = sum(1 for n in news_items if n["sentiment"] == "Netral")
+
         div_hunters = sorted(
             [x for x in market["stocks"] if x["div_yield"] >= 3.0 and x["value_traded_b"] >= 0.5],
             key=lambda x: x["div_yield"],
             reverse=True,
         )[:15]
+
         return {
             "ticker": t,
             "news": news_items,
             "sentiment_stats": {"positif": pos, "negatif": neg, "netral": net},
             "calendar": prof.get("calendar") if prof else {},
             "div_hunters": [
-                {
-                    "ticker": x["ticker"],
-                    "name": x["name"],
-                    "close": x["close"],
-                    "div_yield": x["div_yield"],
-                    "is_issi": x["is_issi"],
-                    "alpha_score": x["alpha_score"],
-                    "pe": x["pe"],
-                }
+                {"ticker": x["ticker"], "name": x["name"], "close": x["close"], "div_yield": x["div_yield"], "is_issi": x["is_issi"], "alpha_score": x["alpha_score"], "pe": x["pe"]}
                 for x in div_hunters
             ],
         }
@@ -1602,6 +1480,7 @@ def compare_stocks(tickers: str = "BRIS,TLKM,ADRO"):
         market = get_market_data(force=False)
         by_ticker = {x["ticker"]: x for x in market["stocks"]}
         items = [by_ticker[t] for t in t_list if t in by_ticker]
+
         series = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
             futs = {t: ex.submit(fetch_yf_ohlcv, t, "6mo") for t in t_list}
@@ -1610,14 +1489,12 @@ def compare_stocks(tickers: str = "BRIS,TLKM,ADRO"):
                     bars = fut.result()
                     if bars:
                         base = bars[0]["close"]
-                        series[t] = [
-                            {"date": b["date"], "idx": round((b["close"] / base) * 100, 2), "close": round(b["close"], 0)}
-                            for b in bars[::max(1, len(bars) // 70)]
-                        ]
+                        series[t] = [{"date": b["date"], "idx": round((b["close"] / base) * 100, 2), "close": round(b["close"], 0)} for b in bars[::max(1, len(bars) // 70)]]
                     else:
                         series[t] = []
                 except Exception:
                     series[t] = []
+
         return {"tickers": t_list, "stocks": items, "series": series}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -1646,6 +1523,7 @@ async def ai_analyze(request: Request):
         question = body.get("question") or ""
         user_key = (body.get("api_key") or "").strip()
         api_key = user_key or os.environ.get("GEMINI_API_KEY", "").strip()
+
         market = get_market_data(force=False)
         stocks = market["stocks"]
         s = next((x for x in stocks if x["ticker"] == ticker), None)
@@ -1707,9 +1585,7 @@ async def telegram_send(request: Request):
         if not picks:
             msg = f"<b>ALPHA IDX ALERT</b> ({market['updated_at']})\nBelum ada sinyal di atas Skor {min_score} saat ini."
         else:
-            lines = [
-                f"<b>ALPHA IDX SNIPER ALERT</b>\n{market['updated_at']}\nFilter: {'ISSI Syariah' if only_issi else 'Semua IHSG'} - Skor >= {min_score}\n"
-            ]
+            lines = [f"<b>ALPHA IDX SNIPER ALERT</b>\n{market['updated_at']}\nFilter: {'ISSI Syariah' if only_issi else 'Semua IHSG'} - Skor >= {min_score}\n"]
             for x in picks:
                 p = x["plan"]
                 lines.append(
@@ -1732,7 +1608,7 @@ def telegram_cron(only_issi: int = 1, min_score: int = 74):
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
     if not token or not chat_id:
-        return JSONResponse({"error": "Set TELEGRAM_BOT_TOKEN & TELEGRAM_CHAT_ID di Environment Variables."}, status_code=400)
+        return JSONResponse({"error": "Set TELEGRAM_BOT_TOKEN & TELEGRAM_CHAT_ID di Vercel Environment Variables."}, status_code=400)
     try:
         market = get_market_data(force=True)
         picks = [
@@ -1747,9 +1623,7 @@ def telegram_cron(only_issi: int = 1, min_score: int = 74):
         lines = [f"<b>ALPHA IDX AUTO-ALERT</b> ({market['updated_at']})\n"]
         for x in picks:
             p = x["plan"]
-            lines.append(
-                f"- <b>{x['ticker']}</b> Skor {x['alpha_score']} | Beli {p['entry_low']:,}-{p['entry_high']:,} | SL {p['stop_loss']:,} | TP1 {p['tp1']:,}"
-            )
+            lines.append(f"- <b>{x['ticker']}</b> Skor {x['alpha_score']} | Beli {p['entry_low']:,}-{p['entry_high']:,} | SL {p['stop_loss']:,} | TP1 {p['tp1']:,}")
         _send_telegram_msg(token, chat_id, "\n".join(lines))
         return {"sent": True, "count": len(picks)}
     except Exception as e:

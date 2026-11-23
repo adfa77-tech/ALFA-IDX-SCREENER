@@ -1,744 +1,745 @@
-import concurrent.futures
-import json
-import math
-import os
-import re
-import time
-import urllib.error
-import urllib.parse
-import urllib.request
-import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta, timezone
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+<!DOCTYPE html>
+<html lang="id" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="google" content="notranslate" />
+  <title>ALPHA IDX • Pro Terminal IHSG & ISSI</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    body { background: #070b14; color: #e2e8f0; font-family: 'Plus Jakarta Sans', sans-serif; }
+    .font-mono { font-family: 'JetBrains Mono', monospace; }
+    .glass { background: rgba(15, 23, 42, 0.82); backdrop-filter: blur(14px); border: 1px solid rgba(148, 163, 184, 0.14); }
+    ::-webkit-scrollbar { width: 7px; height: 7px; }
+    ::-webkit-scrollbar-track { background: #0b1120; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 99px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
 
-app = FastAPI()
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useRef, useId } = React;
+    const fmtRp = (n) => (n != null && !isNaN(n) ? "Rp " + Math.round(Number(n)).toLocaleString("id-ID") : "-");
 
-WIB = timezone(timedelta(hours=7))
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ISSI_REPO_FILE = os.path.join(BASE_DIR, "issi_list.txt")
-ISSI_TMP_FILE = "/tmp/issi_list.txt"
-
-CACHE_TTL = 10
-PROFILE_TTL = 300
-OHLCV_TTL = 30
-NEWS_TTL = 300
-
-_cache = {"timestamp": 0, "data": None}
-_profile_cache = {}
-_ohlcv_cache = {}
-_news_cache = {}
-_yf_auth = {"timestamp": 0, "opener": None, "crumb": ""}
-
-DEFAULT_ISSI = {
-    "AADI", "AALI", "ABMM", "ACES", "ADHI", "ADMR", "ADRO", "AGII", "AKRA", "ALDO",
-    "AMFG", "AMMN", "AMRT", "ANJT", "ANTM", "APLN", "ARCI", "ARNA", "ARTO", "ASII",
-    "ASRI", "ASSA", "AUTO", "AVIA", "BALI", "BANK", "BELI", "BEST", "BIRD", "BISI",
-    "BKSL", "BMHS", "BMTR", "BREN", "BRIS", "BRMS", "BRPT", "BSDE", "BSSR", "BTPS",
-    "BUDI", "BUKA", "BULL", "BUMI", "BWPT", "BYAN", "CAMP", "CARE", "CARS", "CEKA",
-    "CENT", "CINT", "CLEO", "CMNP", "CMRY", "CPIN", "CSAP", "CTBN", "CTRA", "CUAN",
-    "DCII", "DEWA", "DGNS", "DIVA", "DKFT", "DMAS", "DMMX", "DOID", "DOOH", "DRMA",
-    "DSNG", "DVLA", "EAST", "ECII", "EDGE", "EKAD", "ELSA", "EMTK", "ENRG", "EPMT",
-    "ERAA", "ESSA", "EXCL", "FAST", "FILM", "FIRE", "FPNI", "GEMS", "GHSI", "GJTL",
-    "GLVA", "GOOD", "GOTO", "GZCO", "HALO", "HEAL", "HERO", "HOKI", "HRUM", "ICBP",
-    "IFII", "IGAR", "IMAS", "INAI", "INCO", "INDF", "INDY", "INET", "INKP", "INTP",
-    "IPCC", "IPCM", "IRRA", "ISAT", "ISSP", "ITMG", "JECC", "JPFA", "JRPT", "JSMR",
-    "KAEF", "KBLI", "KBLM", "KEEN", "KEJU", "KIJA", "KKGI", "KLBF", "KMTR", "KPIG",
-    "KRAS", "LION", "LPCK", "LPIN", "LPKR", "LPPF", "LSIP", "MAIN", "MAPA", "MAPB",
-    "MAPI", "MARK", "MBAP", "MBMA", "MBSS", "MCAS", "MDKA", "MEDC", "MERK", "MIDI",
-    "MIKA", "MMLP", "MNCN", "MPMX", "MPPA", "MTEL", "MTDL", "MTLA", "MYOH", "MYOR",
-    "NCKL", "NFCX", "NRCA", "NSSS", "PANI", "PBID", "PEHA", "PGAS", "PGEO", "PJAA",
-    "PLIN", "PNBS", "POWR", "PPRE", "PRDA", "PSAB", "PTBA", "PTPP", "PTRO", "PWON",
-    "PYFA", "PZZA", "RAAM", "RAJA", "RALS", "RDTX", "RMKE", "ROTI", "SAME", "SCCO",
-    "SCMA", "SGER", "SGRO", "SHIP", "SIDO", "SILO", "SIMP", "SKBM", "SLIS", "SMDR",
-    "SMGR", "SMRA", "SMSM", "SOHO", "SPMA", "SRAJ", "SRTG", "SSIA", "SSMS", "STAA",
-    "STTP", "TAPG", "TBIG", "TBLA", "TCPI", "TGKA", "TINS", "TKIM", "TLKM", "TMAS",
-    "TOBA", "TOTL", "TOTO", "TOWR", "TPIA", "TRGU", "TSPC", "ULTJ", "UNTR", "UNVR",
-    "VKTR", "VOKS", "WEGE", "WEHA", "WIFI", "WIKA", "WOOD", "WTON", "ZINC", "ZONE",
-}
-
-NON_SYARIAH_TICKERS = {
-    "BBCA", "BBRI", "BMRI", "BBNI", "BBTN", "BDMN", "BNGA", "BNLI", "MEGA", "NISP",
-    "PNBN", "BBKP", "BJBR", "BJTM", "BTPN", "BNII", "MAYA", "AGRO", "BBYB", "AMAR",
-    "GGRM", "HMSP", "WIIM", "RMBA", "ITIC", "MLBI", "DLTA", "ADMF", "BFIN", "CFIN",
-    "PNLF", "PNIN", "ASRM", "LPGI", "TUGU", "MREI", "TRIM", "PANS",
-}
-
-NON_SYARIAH_KEYWORDS = (
-    "tobacco", "brewer", "distiller", "casino", "gambling", "insurance", "consumer finance"
-)
-
-SECTOR_ID_MAP = {
-    "Energy Minerals": "Energi & Pertambangan",
-    "Non-Energy Minerals": "Mineral & Logam Dasar",
-    "Finance": "Keuangan & Perbankan",
-    "Consumer Non-Durables": "Barang Konsumen Primer",
-    "Consumer Durables": "Barang Konsumen Sekunder",
-    "Consumer Services": "Jasa Konsumen",
-    "Retail Trade": "Perdagangan Ritel",
-    "Communications": "Komunikasi & Telko",
-    "Utilities": "Utilitas & Energi Terbarukan",
-    "Transportation": "Transportasi & Logistik",
-    "Industrial Services": "Jasa Industri & Konstruksi",
-    "Producer Manufacturing": "Manufaktur Industri",
-    "Process Industries": "Industri Pengolahan & Kimia",
-    "Health Technology": "Teknologi Kesehatan & Farmasi",
-    "Health Services": "Layanan Kesehatan & Rumah Sakit",
-    "Technology Services": "Layanan Teknologi & Digital",
-    "Electronic Technology": "Teknologi Elektronik",
-    "Commercial Services": "Jasa Komersial",
-    "Distribution Services": "Jasa Distribusi",
-}
-
-POS_NEWS_WORDS = (
-    "naik", "melesat", "melonjak", "menguat", "rekor", "untung", "laba", "dividen",
-    "ekspansi", "akuisisi", "kontrak", "proyek", "buyback", "rekomendasi beli",
-    "target harga", "akumulasi", "tumbuh", "positif", "surplus", "terbang", "rally",
-)
-NEG_NEWS_WORDS = (
-    "turun", "anjlok", "ambruk", "melemah", "rugi", "koreksi", "utang", "gagal bayar",
-    "pkpu", "pailit", "suspensi", "uma", "jual", "distribusi", "tertekan", "merosot",
-    "pangkas", "negatif", "defisit", "arb", "penurunan",
-)
-
-FULL_COLS = [
-    "name", "description", "sector", "industry", "close", "open", "high", "low",
-    "change", "volume", "average_volume_10d_calc", "relative_volume_10d_calc",
-    "market_cap_basic", "RSI", "RSI[1]", "Stoch.K", "Stoch.D", "MACD.macd",
-    "MACD.signal", "EMA10", "EMA20", "EMA50", "EMA200", "SMA20", "SMA50", "SMA200",
-    "ADX", "ADX+DI", "ADX-DI", "BB.upper", "BB.lower", "ATR", "VWAP", "VWMA",
-    "Recommend.All", "Recommend.MA", "Recommend.Other", "Perf.W", "Perf.1M",
-    "price_52_week_high", "price_52_week_low", "Pivot.M.Classic.S1",
-    "Pivot.M.Classic.R1", "Pivot.M.Classic.R2", "price_earnings_ttm",
-    "price_book_fq", "dividends_yield_current", "return_on_equity",
-    "net_margin_ttm", "debt_to_equity", "total_debt", "total_assets",
-]
-
-SAFE_COLS = [
-    "name", "description", "sector", "industry", "close", "open", "high", "low",
-    "change", "volume", "average_volume_10d_calc", "relative_volume_10d_calc",
-    "market_cap_basic", "RSI", "RSI[1]", "Stoch.K", "Stoch.D", "MACD.macd",
-    "MACD.signal", "EMA10", "EMA20", "EMA50", "EMA200", "SMA20", "SMA50", "SMA200",
-    "ADX", "ADX+DI", "ADX-DI", "BB.upper", "BB.lower", "ATR", "VWMA",
-    "Recommend.All", "Perf.W", "Perf.1M", "price_52_week_high", "price_52_week_low",
-    "Pivot.M.Classic.S1", "Pivot.M.Classic.R1", "Pivot.M.Classic.R2",
-    "price_earnings_ttm", "price_book_fq",
-]
-
-
-def _now_wib():
-    return datetime.now(WIB)
-
-
-def _today_wib_str():
-    return _now_wib().strftime("%Y-%m-%d")
-
-
-def load_issi_set():
-    s = set(DEFAULT_ISSI)
-    for path in (ISSI_TMP_FILE, ISSI_REPO_FILE):
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    tokens = [t.strip().upper().replace("IDX:", "") for t in f.read().replace(",", "\n").splitlines()]
-                custom = {t for t in tokens if 3 <= len(t) <= 5 and t.isalpha()}
-                if custom:
-                    return custom
-            except Exception:
-                pass
-    return s
-
-
-def _tick_bei(price):
-    if price < 200:
-        return 1
-    if price < 500:
-        return 2
-    if price < 2000:
-        return 5
-    if price < 5000:
-        return 10
-    return 25
-
-
-def round_fraksi_bei(price):
-    if price is None or price <= 0:
-        return 0
-    tick = _tick_bei(price)
-    return max(1, int(round(price / tick) * tick))
-
-
-def floor_fraksi_bei(price):
-    if price is None or price <= 0:
-        return 0
-    tick = _tick_bei(price)
-    return max(1, int(math.floor(price / tick) * tick))
-
-
-def safe_num(val, default=None):
-    if val is None:
-        return default
-    try:
-        f = float(val)
-        return default if (math.isnan(f) or math.isinf(f)) else f
-    except (TypeError, ValueError):
-        return default
-
-
-def _local_phrase_translate(text):
-    phrases = [
-        ("engages in the provision of", "bergerak di bidang penyediaan"),
-        ("engages in the", "bergerak dalam bidang"),
-        ("is engaged in", "bergerak di bidang"),
-        ("operates through the following segments:", "beroperasi melalui segmen berikut:"),
-        ("operates through", "beroperasi melalui"),
-        ("The company was founded", "Perusahaan ini didirikan"),
-        ("was founded in", "didirikan pada tahun"),
-        ("and is headquartered in", "dan berkantor pusat di"),
-        ("headquartered in", "berkantor pusat di"),
-        ("is a subsidiary of", "merupakan anak perusahaan dari"),
-        ("as a subsidiary of", "sebagai anak perusahaan dari"),
-        ("in Indonesia and internationally", "di Indonesia maupun internasional"),
-        ("in Indonesia", "di Indonesia"),
-        ("products and services", "produk dan layanan"),
-        ("banking products and services", "produk dan layanan perbankan"),
-        ("coal mining", "pertambangan batu bara"),
-        ("nickel mining", "pertambangan nikel"),
-        ("oil and gas", "minyak dan gas bumi"),
-        ("real estate", "properti dan real estat"),
-        ("telecommunications", "telekomunikasi"),
-        ("healthcare", "layanan kesehatan"),
-        ("retail", "ritel"),
-    ]
-    out = text
-    for en, idn in phrases:
-        out = re.sub(re.escape(en), idn, out, flags=re.IGNORECASE)
-    return out
-
-
-def translate_to_id(text):
-    if not text or not text.strip():
-        return ""
-    clean = text.strip()[:1800]
-
-    try:
-        data = urllib.parse.urlencode({"q": clean}).encode("utf-8")
-        req = urllib.request.Request(
-            "https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=id&dt=t",
-            data=data,
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
-        with urllib.request.urlopen(req, timeout=4) as resp:
-            parsed = json.loads(resp.read().decode("utf-8"))
-        res = "".join(chunk[0] for chunk in parsed[0] if chunk and chunk[0])
-        if res and res.strip().lower() != clean.lower():
-            return res
-    except Exception:
-        pass
-
-    return _local_phrase_translate(clean)
-
-
-def translate_role(title):
-    if not title:
-        return "-"
-    replacements = [
-        ("Vice President Director", "Wakil Direktur Utama"),
-        ("President Director", "Direktur Utama"),
-        ("Independent President Commissioner", "Komisaris Utama Independen"),
-        ("President Commissioner", "Komisaris Utama"),
-        ("Independent Commissioner", "Komisaris Independen"),
-        ("Vice President Commissioner", "Wakil Komisaris Utama"),
-        ("Chief Executive Officer", "Direktur Utama (CEO)"),
-        ("Chief Financial Officer", "Direktur Keuangan (CFO)"),
-        ("Chief Operating Officer", "Direktur Operasional (COO)"),
-        ("Corporate Secretary", "Sekretaris Perusahaan"),
-        ("Commissioner", "Komisaris"),
-        ("Director", "Direktur"),
-        ("Officer", "Pejabat Eksekutif"),
-        ("10% Owner", "Pemegang Saham >=10%"),
-        ("Beneficial Owner", "Pemilik Manfaat / Pengendali"),
-    ]
-    out = title
-    for en, idn in replacements:
-        out = out.replace(en, idn)
-    return out
-
-
-def post_tv_scanner(columns):
-    payload = {
-        "filter": [
-            {"left": "exchange", "operation": "equal", "right": "IDX"},
-            {"left": "close", "operation": "greater", "right": 0},
-            {"left": "volume", "operation": "greater", "right": 0},
-        ],
-        "options": {"lang": "en"},
-        "symbols": {"query": {"types": []}, "tickers": []},
-        "columns": columns,
-        "sort": {"sortBy": "market_cap_basic", "sortOrder": "desc"},
-        "range": [0, 950],
-    }
-    req = urllib.request.Request(
-        "https://scanner.tradingview.com/indonesia/scan",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0",
-            "Origin": "https://www.tradingview.com",
-            "Referer": "https://www.tradingview.com/",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
-def analyze_stock(row_dict, issi_set):
-    ticker = (row_dict.get("name") or "").upper()
-    close = safe_num(row_dict.get("close"), 0)
-    if not ticker or close <= 0:
-        return None
-
-    open_p = safe_num(row_dict.get("open"), close)
-    high_p = safe_num(row_dict.get("high"), close)
-    low_p = safe_num(row_dict.get("low"), close)
-    change = safe_num(row_dict.get("change"), 0)
-    volume = safe_num(row_dict.get("volume"), 0)
-    avg_vol = safe_num(row_dict.get("average_volume_10d_calc"), 0)
-    rvol = safe_num(row_dict.get("relative_volume_10d_calc"))
-    if rvol is None and avg_vol and avg_vol > 0:
-        rvol = volume / avg_vol
-    rvol = rvol or 1.0
-
-    close_int = round_fraksi_bei(close)
-    open_int = round_fraksi_bei(open_p)
-    high_int = max(close_int, open_int, round_fraksi_bei(high_p))
-    low_int = min(close_int, open_int, floor_fraksi_bei(low_p))
-    prev_close_int = round_fraksi_bei(close / (1 + change / 100.0)) if abs(change) < 99 else close_int
-
-    val_traded = close_int * volume
-    mcap = safe_num(row_dict.get("market_cap_basic"), 0)
-
-    rsi = safe_num(row_dict.get("RSI"), 50)
-    rsi_prev = safe_num(row_dict.get("RSI[1]"), rsi)
-    stoch_k = safe_num(row_dict.get("Stoch.K"), 50)
-    stoch_d = safe_num(row_dict.get("Stoch.D"), 50)
-    macd = safe_num(row_dict.get("MACD.macd"), 0)
-    macd_sig = safe_num(row_dict.get("MACD.signal"), 0)
-    macd_hist = macd - macd_sig
-
-    ema10 = safe_num(row_dict.get("EMA10"), close)
-    ema20 = safe_num(row_dict.get("EMA20"), close)
-    ema50 = safe_num(row_dict.get("EMA50"), close)
-    ema200 = safe_num(row_dict.get("EMA200"), ema50)
-    sma20 = safe_num(row_dict.get("SMA20"), ema20)
-    vwap = safe_num(row_dict.get("VWAP"), (high_p + low_p + close) / 3)
-    vwma = safe_num(row_dict.get("VWMA"), sma20)
-
-    adx = safe_num(row_dict.get("ADX"), 15)
-    di_plus = safe_num(row_dict.get("ADX+DI"), 20)
-    di_minus = safe_num(row_dict.get("ADX-DI"), 20)
-
-    bb_up = safe_num(row_dict.get("BB.upper"), close * 1.05)
-    bb_low = safe_num(row_dict.get("BB.lower"), close * 0.95)
-    bbw = (bb_up - bb_low) / sma20 if sma20 > 0 else 0.15
-
-    atr = safe_num(row_dict.get("ATR"))
-    if not atr or atr <= 0:
-        atr = max(close * 0.025, high_p - low_p)
-
-    high_52w = safe_num(row_dict.get("price_52_week_high"), close)
-    low_52w = safe_num(row_dict.get("price_52_week_low"), close)
-    piv_s1 = safe_num(row_dict.get("Pivot.M.Classic.S1"), close * 0.95)
-    piv_r1 = safe_num(row_dict.get("Pivot.M.Classic.R1"), close * 1.06)
-    piv_r2 = safe_num(row_dict.get("Pivot.M.Classic.R2"), close * 1.12)
-
-    pe = safe_num(row_dict.get("price_earnings_ttm"))
-    pbv = safe_num(row_dict.get("price_book_fq"))
-    roe = safe_num(row_dict.get("return_on_equity"))
-    npm = safe_num(row_dict.get("net_margin_ttm"))
-    div_yield = safe_num(row_dict.get("dividends_yield_current"), 0)
-    tot_debt = safe_num(row_dict.get("total_debt"))
-    tot_assets = safe_num(row_dict.get("total_assets"))
-    tv_rec = safe_num(row_dict.get("Recommend.All"), 0)
-    perf_w = safe_num(row_dict.get("Perf.W"), 0)
-    perf_1m = safe_num(row_dict.get("Perf.1M"), 0)
-
-    sector_raw = row_dict.get("sector") or "-"
-    sector = SECTOR_ID_MAP.get(sector_raw, sector_raw)
-    industry = row_dict.get("industry") or "-"
-    desc = row_dict.get("description") or ticker
-
-    debt_asset_ratio = round((tot_debt / tot_assets) * 100, 1) if (tot_debt is not None and tot_assets and tot_assets > 0) else None
-    ind_lower = (industry + " " + sector_raw).lower()
-    is_haram = any(k in ind_lower for k in NON_SYARIAH_KEYWORDS) or ("bank" in ind_lower and ticker not in {"BRIS", "BTPS", "PNBS", "BANK"})
-    in_issi_list = ticker in issi_set
-    is_issi = in_issi_list and (ticker not in NON_SYARIAH_TICKERS) and (not is_haram) and (True if debt_asset_ratio is None else debt_asset_ratio <= 45.0)
-
-    smart_score = 0
-    tags = []
-    if rvol >= 2.0 and close >= open_p:
-        smart_score += 12
-        tags.append("Volume Spike Institusi")
-    elif rvol >= 1.35 and close >= open_p:
-        smart_score += 8
-        tags.append("Akumulasi Volume")
-    elif rvol >= 1.5 and change > -1.5 and close > (low_p + (high_p - low_p) * 0.55):
-        smart_score += 7
-        tags.append("Absorption")
-    if close > vwap:
-        smart_score += 6
-    if vwma > sma20:
-        smart_score += 6
-        tags.append("VWMA Bullish")
-    if val_traded >= 5_000_000_000:
-        smart_score += 4
-
-    trend_score = 0
-    if close > ema20:
-        trend_score += 6
-    if ema20 > ema50:
-        trend_score += 6
-    if ema50 > ema200:
-        trend_score += 6
-    if close > ema20 > ema50 > ema200:
-        tags.append("Stage-2 Golden Trend")
-    if adx >= 22 and di_plus > di_minus:
-        trend_score += 5
-    if high_52w > 0 and close >= high_52w * 0.78:
-        trend_score += 4
-
-    mom_score = 0
-    is_squeeze = bbw <= 0.12
-    is_breakout = close > ema20 and rvol >= 1.3 and change > 1.2 and (is_squeeze or close >= bb_up * 0.985)
-    is_rebound = (26 <= rsi <= 43) and (rsi > rsi_prev) and (stoch_k > stoch_d) and (close >= open_p)
-    if is_breakout:
-        mom_score += 10
-        tags.append("Squeeze Breakout" if is_squeeze else "Breakout")
-    elif is_rebound:
-        mom_score += 9
-        tags.append("Oversold Rebound")
-    if 50 <= rsi <= 68:
-        mom_score += 7
-    elif 43 <= rsi < 50 and rsi > rsi_prev:
-        mom_score += 5
-    elif rsi > 76:
-        mom_score -= 6
-    if macd > macd_sig and macd_hist > 0:
-        mom_score += 6
-    elif macd > macd_sig:
-        mom_score += 4
-    if stoch_k > stoch_d and stoch_k < 80:
-        mom_score += 2
-
-    fund_score = 0
-    if pe is not None and 0 < pe <= 15:
-        fund_score += 7
-        tags.append("PER Murah")
-    elif pe is not None and 15 < pe <= 24:
-        fund_score += 4
-    if pbv is not None and 0 < pbv <= 1.8:
-        fund_score += 4
-    elif pbv is not None and 1.8 < pbv <= 3.0:
-        fund_score += 2
-    if roe is not None and roe >= 12:
-        fund_score += 5
-        tags.append("ROE Tinggi")
-    elif roe is not None and roe >= 6:
-        fund_score += 3
-    if npm is not None and npm >= 8:
-        fund_score += 2
-    if div_yield >= 3:
-        fund_score += 2
-
-    if tv_rec >= 0.4:
-        smart_score += 2
-    elif tv_rec <= -0.4:
-        trend_score = max(0, trend_score - 5)
-
-    alpha_score = max(0, min(100, round(smart_score + trend_score + mom_score + fund_score)))
-
-    risk_unit = max(atr * 1.45, close_int * 0.03)
-    if is_rebound:
-        entry_low = floor_fraksi_bei(close_int * 0.985)
-        entry_high = max(entry_low, round_fraksi_bei(close_int * 1.005))
-        sl_raw = min(low_int * 0.98, close_int - risk_unit)
-    elif is_breakout:
-        entry_low = floor_fraksi_bei(max(ema20 * 0.99, close_int * 0.985))
-        entry_high = max(entry_low, round_fraksi_bei(close_int * 1.01))
-        sl_raw = max(ema20 * 0.97, close_int - risk_unit)
-    else:
-        base_sup = min(ema20, vwap) if ema20 > 0 else close_int * 0.97
-        entry_low = floor_fraksi_bei(max(base_sup, close_int * 0.97))
-        entry_high = max(entry_low, round_fraksi_bei(close_int))
-        sl_raw = min(piv_s1, close_int - risk_unit)
-
-    stop_loss = floor_fraksi_bei(min(sl_raw, entry_low * 0.96))
-    if stop_loss >= entry_low:
-        stop_loss = floor_fraksi_bei(entry_low * 0.94)
-
-    risk_per_share = max(1, entry_high - stop_loss)
-    tp1_calc = entry_high + (risk_per_share * 2.0)
-    tp2_calc = entry_high + (risk_per_share * 3.5)
-
-    tp1 = round_fraksi_bei(max(tp1_calc, piv_r1 if piv_r1 > entry_high * 1.03 else tp1_calc))
-    tp2 = round_fraksi_bei(max(tp2_calc, piv_r2 if piv_r2 > tp1 * 1.03 else tp2_calc))
-    rr_ratio = round((tp1 - entry_high) / risk_per_share, 2)
-
-    if rsi >= 76 and change > 4:
-        signal, signal_code = "TAKE PROFIT / SELL", "SELL"
-        action_note = f"RSI Overbought ekstrem ({rsi:.1f}). Amankan profit bertahap atau Trailing Stop di EMA10 (Rp {round_fraksi_bei(ema10):,})."
-    elif alpha_score >= 76 and close > ema20 and rsi < 74:
-        signal, signal_code = "STRONG BUY", "STRONG_BUY"
-        action_note = f"Konfluensi kuat: Skor {alpha_score}/100, aliran dana & tren Stage-2 sejalan. Akumulasi di Rp {entry_low:,}-{entry_high:,}."
-    elif is_breakout and alpha_score >= 62:
-        signal, signal_code = "BUY BREAKOUT", "BUY_BREAKOUT"
-        action_note = f"Breakout terkonfirmasi RVOL {rvol:.2f}x. Entry di atas Rp {entry_low:,} dengan disiplin SL Rp {stop_loss:,}."
-    elif is_rebound and alpha_score >= 54:
-        signal, signal_code = "BUY ON WEAKNESS", "BOW"
-        action_note = f"Pantulan awal dari jenuh jual (RSI {rsi:.1f}). Speculative buy dekat support menuju TP1 Rp {tp1:,}."
-    elif close < ema50 and ema20 < ema50 and tv_rec < -0.15:
-        signal, signal_code = "SELL / AVOID", "AVOID"
-        action_note = f"Struktur masih downtrend di bawah EMA50 (Rp {round_fraksi_bei(ema50):,}). Hindari dulu atau jual saat rebound."
-    elif alpha_score >= 58:
-        signal, signal_code = "ACCUMULATE / WATCH", "WATCH"
-        action_note = f"Struktur cukup baik (Skor {alpha_score}). Antre dekat support Rp {entry_low:,}."
-    else:
-        signal, signal_code = "HOLD / NEUTRAL", "NEUTRAL"
-        action_note = "Momentum belum konvergen. Tunggu harga menembus EMA20 dengan volume di atas rata-rata."
-
-    return {
-        "ticker": ticker,
-        "name": desc,
-        "sector": sector,
-        "industry": industry,
-        "is_issi": is_issi,
-        "in_issi_list": in_issi_list,
-        "debt_asset_ratio": debt_asset_ratio,
-        "open": open_int,
-        "high": high_int,
-        "low": low_int,
-        "close": close_int,
-        "prev_close": prev_close_int,
-        "change": round(change, 2),
-        "volume": int(volume),
-        "value_traded_b": round(val_traded / 1e9, 2),
-        "mcap_t": round(mcap / 1e12, 2) if mcap else 0,
-        "rvol": round(rvol, 2),
-        "rsi": round(rsi, 1),
-        "adx": round(adx, 1),
-        "bbw": round(bbw * 100, 1),
-        "ema10": round_fraksi_bei(ema10),
-        "ema20": round_fraksi_bei(ema20),
-        "ema50": round_fraksi_bei(ema50),
-        "ema200": round_fraksi_bei(ema200),
-        "vwap": round_fraksi_bei(vwap),
-        "vwma_bull": vwma > sma20,
-        "macd_bull": macd > macd_sig,
-        "pe": round(pe, 1) if pe is not None else None,
-        "pbv": round(pbv, 2) if pbv is not None else None,
-        "roe": round(roe, 1) if roe is not None else None,
-        "npm": round(npm, 1) if npm is not None else None,
-        "div_yield": round(div_yield, 2),
-        "perf_w": round(perf_w, 2),
-        "perf_1m": round(perf_1m, 2),
-        "high_52w": round_fraksi_bei(high_52w),
-        "low_52w": round_fraksi_bei(low_52w),
-        "tv_rec": round(tv_rec, 2),
-        "alpha_score": alpha_score,
-        "pillars": {
-            "smart_money": round(smart_score),
-            "trend": round(trend_score),
-            "momentum": round(mom_score),
-            "fundamental": round(fund_score),
-        },
-        "signal": signal,
-        "signal_code": signal_code,
-        "is_breakout": is_breakout,
-        "is_rebound": is_rebound,
-        "is_squeeze": is_squeeze,
-        "tags": tags[:4],
-        "plan": {
-            "entry_low": entry_low,
-            "entry_high": entry_high,
-            "stop_loss": stop_loss,
-            "tp1": tp1,
-            "tp2": tp2,
-            "rr": rr_ratio,
-            "sl_pct": round(((stop_loss - entry_high) / entry_high) * 100, 1) if entry_high else 0,
-            "tp1_pct": round(((tp1 - entry_high) / entry_high) * 100, 1) if entry_high else 0,
-            "tp2_pct": round(((tp2 - entry_high) / entry_high) * 100, 1) if entry_high else 0,
-            "note": action_note,
-        },
+    function TickerTape() {
+      const ref = useRef(null);
+      useEffect(() => {
+        const host = ref.current;
+        if (!host || host.childElementCount > 0) return;
+        const wrap = document.createElement("div");
+        wrap.className = "tradingview-widget-container";
+        const w = document.createElement("div");
+        w.className = "tradingview-widget-container__widget";
+        wrap.appendChild(w);
+        const s = document.createElement("script");
+        s.type = "text/javascript";
+        s.src = "https://s3.tradingview.com/external-embedding/embed-widget-ticker-tape.js";
+        s.async = true;
+        s.text = JSON.stringify({
+          symbols: [
+            { description: "IHSG", proName: "IDX:COMPOSITE" }, { description: "BRIS", proName: "IDX:BRIS" },
+            { description: "TLKM", proName: "IDX:TLKM" }, { description: "ADRO", proName: "IDX:ADRO" },
+            { description: "AMMN", proName: "IDX:AMMN" }, { description: "ANTM", proName: "IDX:ANTM" },
+            { description: "ASII", proName: "IDX:ASII" }, { description: "ICBP", proName: "IDX:ICBP" },
+            { description: "PGEO", proName: "IDX:PGEO" },
+          ],
+          showSymbolLogo: true, isTransparent: true, displayMode: "adaptive", colorTheme: "dark", locale: "id",
+        });
+        wrap.appendChild(s);
+        host.appendChild(wrap);
+      }, []);
+      return <div ref={ref} className="w-full bg-slate-950 border-b border-slate-800/80" />;
     }
 
+    function TradingViewChart({ ticker, interval, expanded }) {
+      const containerId = "tv_chart_" + useId().replace(/[:]/g, "");
+      const ref = useRef(null);
+      useEffect(() => {
+        if (!ticker || !ref.current) return;
+        let timer = null;
+        let active = true;
+        const mount = () => {
+          if (!active || !ref.current) return;
+          if (typeof TradingView !== "undefined") {
+            ref.current.innerHTML = "";
+            new TradingView.widget({
+              autosize: true,
+              symbol: "IDX:" + ticker,
+              interval: interval || "D",
+              timezone: "Asia/Jakarta",
+              theme: "dark",
+              style: "1",
+              locale: "id",
+              toolbar_bg: "#0f172a",
+              enable_publishing: false,
+              allow_symbol_change: true,
+              studies: [
+                { id: "MASimple@tv-basicstudies", inputs: { length: 20 } },
+                { id: "MASimple@tv-basicstudies", inputs: { length: 50 } },
+                "RSI@tv-basicstudies",
+                "MACD@tv-basicstudies",
+              ],
+              container_id: containerId,
+            });
+          } else {
+            timer = setTimeout(mount, 250);
+          }
+        };
+        mount();
+        return () => {
+          active = false;
+          if (timer) clearTimeout(timer);
+        };
+      }, [ticker, interval, expanded, containerId]);
 
-def get_market_data(force=False):
-    now = time.time()
-    if not force and _cache["data"] is not None and (now - _cache["timestamp"] < CACHE_TTL):
-        return _cache["data"]
-
-    cols_used = FULL_COLS
-    try:
-        raw = post_tv_scanner(FULL_COLS)
-    except urllib.error.HTTPError:
-        cols_used = SAFE_COLS
-        raw = post_tv_scanner(SAFE_COLS)
-
-    issi_set = load_issi_set()
-    results = []
-    for item in raw.get("data", []):
-        row_dict = dict(zip(cols_used, item.get("d", [])))
-        analyzed = analyze_stock(row_dict, issi_set)
-        if analyzed:
-            results.append(analyzed)
-
-    results.sort(key=lambda x: (x["alpha_score"], x["value_traded_b"]), reverse=True)
-    payload = {
-        "updated_at": _now_wib().strftime("%Y-%m-%d %H:%M:%S WIB"),
-        "market_date": _today_wib_str(),
-        "total_scanned": len(results),
-        "total_issi": sum(1 for r in results if r["is_issi"]),
-        "strong_buy_count": sum(1 for r in results if r["signal_code"] in ("STRONG_BUY", "BUY_BREAKOUT")),
-        "source": "TradingView Live Scanner + Yahoo Finance Sync (IDX)",
-        "stocks": results,
-    }
-    _cache["timestamp"] = now
-    _cache["data"] = payload
-    return payload
-
-
-def _sync_live_candle_with_market(bars, ticker, live_stock=None):
-    """Memastikan bar terakhir OHLCV selaras dengan harga live TradingView pada hari bursa aktif."""
-    if not bars:
-        bars = []
-
-    if live_stock is None:
-        market = get_market_data(force=False)
-        live_stock = next((x for x in market.get("stocks", []) if x["ticker"] == ticker), None)
-
-    if not live_stock:
-        return bars
-
-    today_str = _today_wib_str()
-    live_bar = {
-        "date": today_str,
-        "open": float(live_stock["open"]),
-        "high": float(live_stock["high"]),
-        "low": float(live_stock["low"]),
-        "close": float(live_stock["close"]),
-        "volume": float(live_stock["volume"]),
+      return (
+        <div
+          id={containerId}
+          ref={ref}
+          style={{ height: expanded ? "620px" : "460px" }}
+          className="w-full bg-slate-950"
+        />
+      );
     }
 
-    if not bars:
-        return [live_bar]
+    function TradingViewGauge({ ticker }) {
+      const ref = useRef(null);
+      useEffect(() => {
+        if (!ticker || !ref.current) return;
+        ref.current.innerHTML = "";
+        const wrap = document.createElement("div");
+        wrap.className = "tradingview-widget-container";
+        wrap.style.height = "100%"; wrap.style.width = "100%";
+        const w = document.createElement("div");
+        w.className = "tradingview-widget-container__widget";
+        wrap.appendChild(w);
+        const s = document.createElement("script");
+        s.type = "text/javascript";
+        s.src = "https://s3.tradingview.com/external-embedding/embed-widget-technical-analysis.js";
+        s.async = true;
+        s.text = JSON.stringify({
+          interval: "1D", width: "100%", isTransparent: true, height: "100%",
+          symbol: "IDX:" + ticker, showIntervalTabs: true, displayMode: "multiple",
+          locale: "id", colorTheme: "dark",
+        });
+        wrap.appendChild(s);
+        ref.current.appendChild(wrap);
+      }, [ticker]);
+      return <div ref={ref} className="w-full h-[380px] bg-slate-950" />;
+    }
 
-    last_bar = bars[-1]
-    if last_bar["date"] == today_str:
-        bars[-1] = {
-            "date": today_str,
-            "open": float(live_stock["open"]) or last_bar["open"],
-            "high": max(last_bar["high"], float(live_stock["high"]), float(live_stock["close"])),
-            "low": min(last_bar["low"], float(live_stock["low"]) or last_bar["low"], float(live_stock["close"])),
-            "close": float(live_stock["close"]),
-            "volume": max(last_bar["volume"], float(live_stock["volume"])),
+    function TradingViewFinancialsWidget({ ticker }) {
+      const ref = useRef(null);
+      useEffect(() => {
+        if (!ticker || !ref.current) return;
+        ref.current.innerHTML = "";
+        const wrap = document.createElement("div");
+        wrap.className = "tradingview-widget-container";
+        wrap.style.width = "100%"; wrap.style.height = "640px";
+        const w = document.createElement("div");
+        w.className = "tradingview-widget-container__widget";
+        w.style.width = "100%"; w.style.height = "100%";
+        wrap.appendChild(w);
+        const s = document.createElement("script");
+        s.type = "text/javascript";
+        s.src = "https://s3.tradingview.com/external-embedding/embed-widget-financials.js";
+        s.async = true;
+        s.text = JSON.stringify({
+          isTransparent: true, largeChartUrl: "", displayMode: "regular",
+          width: "100%", height: "100%", colorTheme: "dark", symbol: "IDX:" + ticker, locale: "id",
+        });
+        wrap.appendChild(s);
+        ref.current.appendChild(wrap);
+      }, [ticker]);
+      return <div ref={ref} style={{ width: "100%", height: "640px" }} className="bg-slate-950" />;
+    }
+
+    function RrgSectorChart({ sectors }) {
+      if (!sectors || sectors.length === 0) return null;
+      const W = 560, H = 320, PAD = 42;
+      const maxX = Math.max(6, ...sectors.map((s) => Math.abs(s.avg_perf_1m || 0)));
+      const maxY = Math.max(4, ...sectors.map((s) => Math.abs(s.avg_perf_w || 0)));
+      const mapX = (v) => PAD + ((v + maxX) / (2 * maxX)) * (W - 2 * PAD);
+      const mapY = (v) => H - PAD - ((v + maxY) / (2 * maxY)) * (H - 2 * PAD);
+      const cx = mapX(0), cy = mapY(0);
+      const qColor = { LEADING: "#34d399", WEAKENING: "#fbbf24", IMPROVING: "#38bdf8", LAGGING: "#fb7185" };
+      return (
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-72 bg-slate-950/90 rounded-xl border border-slate-800">
+          <rect x={cx} y={PAD} width={W - PAD - cx} height={cy - PAD} fill="rgba(16,185,129,0.08)" />
+          <rect x={cx} y={cy} width={W - PAD - cx} height={H - PAD - cy} fill="rgba(245,158,11,0.07)" />
+          <rect x={PAD} y={PAD} width={cx - PAD} height={cy - PAD} fill="rgba(56,189,248,0.07)" />
+          <rect x={PAD} y={cy} width={cx - PAD} height={H - PAD - cy} fill="rgba(244,63,94,0.07)" />
+          <line x1={PAD} y1={cy} x2={W - PAD} y2={cy} stroke="#475569" strokeDasharray="4 4" />
+          <line x1={cx} y1={PAD} x2={cx} y2={H - PAD} stroke="#475569" strokeDasharray="4 4" />
+          <text x={W - PAD - 6} y={PAD + 14} textAnchor="end" fill="#34d399" fontSize="10" fontWeight="bold">LEADING (Kuat)</text>
+          <text x={W - PAD - 6} y={H - PAD - 6} textAnchor="end" fill="#fbbf24" fontSize="10" fontWeight="bold">WEAKENING (Melambat)</text>
+          <text x={PAD + 6} y={PAD + 14} textAnchor="start" fill="#38bdf8" fontSize="10" fontWeight="bold">IMPROVING (Bangkit)</text>
+          <text x={PAD + 6} y={H - PAD - 6} textAnchor="start" fill="#fb7185" fontSize="10" fontWeight="bold">LAGGING (Lemah)</text>
+          {sectors.map((s) => {
+            const px = mapX(s.avg_perf_1m), py = mapY(s.avg_perf_w);
+            return (
+              <g key={s.sector}>
+                <circle cx={px} cy={py} r={Math.min(12, Math.max(5, s.avg_alpha / 10))} fill={qColor[s.quadrant] || "#94a3b8"} fillOpacity="0.85" stroke="#0f172a" strokeWidth="1.5" />
+                <text x={px} y={py - 9} textAnchor="middle" fill="#e2e8f0" fontSize="9" fontWeight="600">{s.sector.split(" ")[0]}</text>
+              </g>
+            );
+          })}
+        </svg>
+      );
+    }
+
+    function CompareLineChart({ series, tickers }) {
+      const colors = ["#10b981", "#38bdf8", "#f59e0b"];
+      const allVals = tickers.flatMap((t) => (series[t] || []).map((p) => p.idx));
+      if (allVals.length < 2) return <div className="h-64 flex items-center justify-center text-xs text-slate-400">Data grafik historis belum tersedia.</div>;
+      const W = 680, H = 260, PAD = 34;
+      const minV = Math.min(...allVals), maxV = Math.max(...allVals), span = Math.max(1, maxV - minV);
+      return (
+        <div className="space-y-2">
+          <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-64 bg-slate-950/90 rounded-xl border border-slate-800">
+            <line x1={PAD} y1={H - PAD - ((100 - minV) / span) * (H - 2 * PAD)} x2={W - PAD} y2={H - PAD - ((100 - minV) / span) * (H - 2 * PAD)} stroke="#334155" strokeDasharray="4 4" />
+            {tickers.map((t, idx) => {
+              const pts = series[t] || [];
+              if (pts.length < 2) return null;
+              const d = pts.map((p, i) => `${i === 0 ? "M" : "L"}${(PAD + (i / (pts.length - 1)) * (W - 2 * PAD)).toFixed(1)},${(H - PAD - ((p.idx - minV) / span) * (H - 2 * PAD)).toFixed(1)}`).join(" ");
+              return <path key={t} d={d} fill="none" stroke={colors[idx]} strokeWidth="2.5" />;
+            })}
+            <text x={PAD} y={18} fill="#94a3b8" fontSize="10">Basis = 100 (Performa 6 Bulan Terakhir)</text>
+          </svg>
+          <div className="flex flex-wrap gap-4 text-xs font-mono">
+            {tickers.map((t, idx) => {
+              const pts = series[t] || [];
+              const last = pts.length ? (pts[pts.length - 1].idx - 100).toFixed(2) : "-";
+              return (
+                <span key={t} className="flex items-center gap-1.5">
+                  <span className="w-3 h-3 rounded-sm inline-block" style={{ background: colors[idx] }} />
+                  <b className="text-white">{t}</b> ({last !== "-" ? `${Number(last) > 0 ? "+" : ""}${last}%` : "-"})
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    function EquityCurveSvg({ curve }) {
+      if (!curve || curve.length < 2) return <div className="h-56 flex items-center justify-center text-xs text-slate-400">Belum ada kurva ekuitas.</div>;
+      const W = 680, H = 230, PAD = 34, vals = curve.map((c) => c.equity);
+      const minV = Math.min(...vals), maxV = Math.max(...vals), span = Math.max(0.5, maxV - minV);
+      const pts = curve.map((c, i) => `${(PAD + (i / (curve.length - 1)) * (W - 2 * PAD)).toFixed(1)},${(H - PAD - ((c.equity - minV) / span) * (H - 2 * PAD)).toFixed(1)}`).join(" ");
+      const lastEq = vals[vals.length - 1];
+      return (
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-56 bg-slate-950/90 rounded-xl border border-slate-800">
+          <polyline fill="none" stroke={lastEq >= 100 ? "#10b981" : "#f43f5e"} strokeWidth="2.5" points={pts} />
+          <text x={PAD} y={18} fill="#94a3b8" fontSize="10">
+            Modal Awal = 100 • Akhir = {lastEq.toFixed(2)} ({curve[0].date} s/d {curve[curve.length - 1].date})
+          </text>
+        </svg>
+      );
+    }
+
+    function SectorRotationView({ onJumpTicker }) {
+      const [data, setData] = useState(null), [loading, setLoading] = useState(true), [err, setErr] = useState("");
+      const load = async () => {
+        setLoading(true); setErr("");
+        try {
+          const r = await fetch("/api/sectors");
+          const d = await r.json();
+          if (d.error) throw new Error(d.error);
+          setData(d);
+        } catch (e) {
+          setErr(e.message);
+        } finally {
+          setLoading(false);
         }
-    elif last_bar["date"] < today_str and float(live_stock["close"]) != float(last_bar["close"]):
-        bars.append(live_bar)
+      };
+      useEffect(() => { load(); }, []);
 
-    return bars
+      const qBadge = (q) =>
+        q === "LEADING"
+          ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+          : q === "WEAKENING"
+          ? "bg-amber-500/20 text-amber-300 border-amber-500/40"
+          : q === "IMPROVING"
+          ? "bg-cyan-500/20 text-cyan-300 border-cyan-500/40"
+          : "bg-rose-500/20 text-rose-300 border-rose-500/40";
 
+      return (
+        <div className="space-y-5">
+          <div className="glass rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-extrabold text-white">🧭 Rotasi Sektor & Heatmap IHSG (RRG Quadrant)</h2>
+              <p className="text-xs text-slate-400">Mengetahui sektor mana yang sedang dimasuki dana institusi minggu ini</p>
+            </div>
+            <button onClick={load} className="h-9 px-4 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-xs font-extrabold text-slate-950">
+              ↻ Refresh Sektor
+            </button>
+          </div>
+          {err && <div className="glass rounded-xl p-3 text-xs text-rose-300">{err}</div>}
+          {loading && <div className="glass rounded-xl p-8 text-center text-xs text-cyan-300 animate-pulse">Menghitung rotasi seluruh sektor BEI...</div>}
+          {data && !loading && (
+            <>
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+                <div className="lg:col-span-6 glass rounded-2xl p-4 space-y-3">
+                  <div className="text-xs font-bold uppercase text-cyan-300">Kuadran Rotasi Sektor (1 Bulan vs 1 Minggu)</div>
+                  <RrgSectorChart sectors={data.sectors} />
+                </div>
+                <div className="lg:col-span-6 glass rounded-2xl p-4 space-y-3">
+                  <div className="text-xs font-bold uppercase text-emerald-300">Heatmap Kinerja Hari Ini per Sektor</div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                    {data.sectors.map((s) => (
+                      <div
+                        key={s.sector}
+                        className={`rounded-xl border p-2.5 ${
+                          s.avg_change >= 1
+                            ? "bg-emerald-500/25 border-emerald-500/50"
+                            : s.avg_change > 0
+                            ? "bg-emerald-500/10 border-emerald-500/30"
+                            : s.avg_change <= -1
+                            ? "bg-rose-500/25 border-rose-500/50"
+                            : "bg-rose-500/10 border-rose-500/30"
+                        }`}
+                      >
+                        <div className="text-xs font-bold text-white truncate">{s.sector}</div>
+                        <div className={`text-base font-extrabold font-mono mt-0.5 ${s.avg_change >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
+                          {s.avg_change > 0 ? "+" : ""}{s.avg_change}%
+                        </div>
+                        <div className="text-[10px] text-slate-300">Skor α: {s.avg_alpha} • Val {s.total_val_b}M</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="glass rounded-2xl p-4 space-y-3">
+                <div className="text-xs font-bold uppercase text-slate-300">Daftar Sektor & Saham Pemimpin (Klik Saham untuk Buka Chart)</div>
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                  {data.sectors.map((s) => (
+                    <div key={s.sector} className="rounded-xl bg-slate-900/80 border border-slate-800 p-3.5 space-y-2.5">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="font-bold text-white text-sm">{s.sector}</div>
+                          <div className="text-[11px] text-slate-400">{s.count} emiten ({s.issi_count} ISSI) • RVOL {s.avg_rvol}x</div>
+                        </div>
+                        <span className={`px-2 py-0.5 text-[10px] font-bold rounded border ${qBadge(s.quadrant)}`}>{s.quadrant}</span>
+                      </div>
+                      <div className="flex gap-3 text-[11px] font-mono text-slate-300">
+                        <span>1W: <b className={s.avg_perf_w >= 0 ? "text-emerald-400" : "text-rose-400"}>{s.avg_perf_w > 0 ? "+" : ""}{s.avg_perf_w}%</b></span>
+                        <span>1M: <b className={s.avg_perf_1m >= 0 ? "text-emerald-400" : "text-rose-400"}>{s.avg_perf_1m > 0 ? "+" : ""}{s.avg_perf_1m}%</b></span>
+                        <span>Skor: <b className="text-cyan-300">{s.avg_alpha}</b></span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5 pt-1 border-t border-slate-800">
+                        {s.top_stocks.map((st) => (
+                          <button
+                            key={st.ticker}
+                            onClick={() => onJumpTicker(st.ticker)}
+                            className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-emerald-500/20 border border-slate-700 text-[11px] font-mono text-white"
+                          >
+                            <b>{st.ticker}</b>{" "}
+                            <span className={st.change >= 0 ? "text-emerald-400" : "text-rose-400"}>
+                              {st.change > 0 ? "+" : ""}{st.change}%
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      );
+    }
 
-def fetch_yf_ohlcv(ticker, range_str="1y", live_stock=None, force=False):
-    clean_ticker = (ticker or "").upper().replace(".JK", "").strip()
-    key = f"{clean_ticker}:{range_str}"
-    now = time.time()
-    cached = _ohlcv_cache.get(key)
-    if not force and cached and (now - cached["ts"] < OHLCV_TTL):
-        return _sync_live_candle_with_market(list(cached["bars"]), clean_ticker, live_stock=live_stock)
+    function DeepAiView({ stock, allStocks, onSelectTicker, onBackToChart }) {
+      const [report, setReport] = useState(null), [loading, setLoading] = useState(false), [err, setErr] = useState("");
+      const [question, setQuestion] = useState("");
+      const [apiKey, setApiKey] = useState(() => localStorage.getItem("alpha_idx_gemini_key") || "");
+      const [showKeyBox, setShowKeyBox] = useState(false);
 
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(clean_ticker)}.JK?range={urllib.parse.quote(range_str)}&interval=1d"
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
-    )
-    bars = []
-    try:
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-
-        res = (data.get("chart") or {}).get("result") or []
-        if res:
-            r0 = res[0]
-            ts_list = r0.get("timestamp") or []
-            quote = ((r0.get("indicators") or {}).get("quote") or [{}])[0]
-            opens = quote.get("open") or []
-            highs = quote.get("high") or []
-            lows = quote.get("low") or []
-            closes = quote.get("close") or []
-            vols = quote.get("volume") or []
-
-            for i, ts in enumerate(ts_list):
-                c = closes[i] if i < len(closes) else None
-                o = opens[i] if i < len(opens) else c
-                h = highs[i] if i < len(highs) else c
-                l = lows[i] if i < len(lows) else c
-                v = vols[i] if i < len(vols) else 0
-                if c is None or o is None or h is None or l is None or c <= 0:
-                    continue
-                dt_wib = datetime.fromtimestamp(ts, tz=WIB)
-                bars.append({
-                    "date": dt_wib.strftime("%Y-%m-%d"),
-                    "open": float(round_fraksi_bei(o)),
-                    "high": float(round_fraksi_bei(h)),
-                    "low": float(floor_fraksi_bei(l)),
-                    "close": float(round_fraksi_bei(c)),
-                    "volume": float(v or 0),
-                })
-    except Exception:
-        pass
-
-    merged = _sync_live_candle_with_market(bars, clean_ticker, live_stock=live_stock)
-    _ohlcv_cache[key] = {"ts": now, "bars": merged}
-    return merged
-
-
-@app.get("/", response_class=HTMLResponse)
-def home():
-    html_path = os.path.join(BASE_DIR, "react_ui.html")
-    if not os.path.exists(html_path):
-        return HTMLResponse("<h3>File react_ui.html tidak ditemukan di repository.</h3>", status_code=500)
-    with open(html_path, "r", encoding="utf-8") as f:
-        return HTMLResponse(content=f.read(), headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
-
-
-@app.get("/api/health")
-def health():
-    return {"status": "ok", "wib_time": _now_wib().strftime("%Y-%m-%d %H:%M:%S WIB")}
-
-
-@app.get("/api/scan")
-def scan(force: int = 0):
-    try:
-        return get_market_data(force=(force == 1))
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@app.get("/api/ohlcv")
-def ohlcv(ticker: str = "BRIS", range_str: str = "6mo", force: int = 0):
-    t = (ticker or "BRIS").upper().replace(".JK", "").strip()
-    rng = range_str if range_str in ("1mo", "3mo", "6mo", "1y", "2y") else "6mo"
-    try:
-        market = get_market_data(force=(force == 1))
-        live_stock = next((x for x in market.get("stocks", []) if x["ticker"] == t), None)
-        bars = fetch_yf_ohlcv(t, range_str=rng, live_stock=live_stock, force=(force == 1))
-        return {
-            "ticker": t,
-            "range": rng,
-            "updated_at": market.get("updated_at"),
-            "live_price": live_stock["close"] if live_stock else None,
-            "bars": bars,
+      const runAnalysis = async (customQ = "") => {
+        if (!stock) return;
+        setLoading(true); setErr("");
+        try {
+          const res = await fetch("/api/ai-analyze", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ticker: stock.ticker, question: customQ, api_key: apiKey }),
+          });
+          const data = await res.json();
+          if (data.error) throw new Error(data.error);
+          setReport(data);
+        } catch (e) {
+          setErr(e.message);
+        } finally {
+          setLoading(false);
         }
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+      };
+
+      useEffect(() => {
+        if (stock) runAnalysis("");
+      }, [stock && stock.ticker]);
+
+      const saveKey = (val) => {
+        setApiKey(val);
+        localStorage.setItem("alpha_idx_gemini_key", val);
+      };
+
+      const quickPrompts = [
+        "Apakah aman di-hold jangka menengah (1–3 bulan)?",
+        "Strategi entry cicil & cut loss terbaik?",
+        "Bandingkan dengan kompetitor satu sektornya!",
+        "Cek risiko jebakan bandar / bull trap",
+      ];
+
+      if (!stock) return <div className="glass rounded-2xl p-8 text-center text-slate-400">Memuat data saham...</div>;
+
+      return (
+        <div className="space-y-5">
+          <div className="glass rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-violet-500 to-cyan-500 flex items-center justify-center text-white text-lg font-extrabold">🤖</div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-base lg:text-lg font-extrabold text-white">
+                    AI Deep Equity Analyst (4 Sumber) • <span className="text-emerald-400 font-mono">IDX:{stock.ticker}</span>
+                  </h2>
+                  {stock.is_issi && (
+                    <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                      ☪ ISSI
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-slate-400">
+                  {stock.name} • {stock.sector} • {fmtRp(stock.close)} ({stock.change > 0 ? "+" : ""}{stock.change}%)
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={stock.ticker}
+                onChange={(e) => onSelectTicker(e.target.value)}
+                className="h-9 bg-slate-900 border border-slate-700 rounded-lg px-3 text-xs font-mono text-white"
+              >
+                {allStocks.slice(0, 150).map((x) => (
+                  <option key={x.ticker} value={x.ticker}>
+                    {x.ticker} — Skor {x.alpha_score} ({x.signal})
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={() => setShowKeyBox(!showKeyBox)}
+                className="h-9 px-3 rounded-lg bg-slate-800 border border-slate-700 text-xs font-semibold text-violet-300"
+              >
+                🔑 {apiKey ? "Gemini Aktif" : "Gemini (Opsional)"}
+              </button>
+              <button
+                onClick={() => runAnalysis(question)}
+                className="h-9 px-3.5 rounded-lg bg-gradient-to-r from-violet-500 to-cyan-500 text-xs font-extrabold text-white"
+              >
+                ⚡ Analisa Ulang
+              </button>
+              <button
+                onClick={onBackToChart}
+                className="h-9 px-3 rounded-lg bg-slate-800 border border-slate-700 text-xs font-semibold text-slate-200"
+              >
+                ← Chart
+              </button>
+            </div>
+          </div>
+
+          {showKeyBox && (
+            <div className="glass rounded-xl p-4 flex flex-wrap items-center justify-between gap-3 border-violet-500/30">
+              <div className="text-xs text-slate-300 max-w-2xl">
+                <b className="text-violet-300">Opsional (Gemini LLM):</b> Tanpa key, Quant AI 4-Sumber tetap berjalan penuh. Tempel API Key gratis dari <i>aistudio.google.com</i> untuk narasi ekstra:
+              </div>
+              <div className="flex items-center gap-2 flex-1 max-w-md">
+                <input
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => saveKey(e.target.value)}
+                  placeholder="AIzaSy..."
+                  className="h-8 flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 text-xs font-mono text-white"
+                />
+                <button onClick={() => runAnalysis(question)} className="h-8 px-3 rounded-lg bg-violet-500 text-white text-xs font-bold">
+                  Terapkan
+                </button>
+              </div>
+            </div>
+          )}
+
+          {err && <div className="glass rounded-xl p-4 border-rose-500/40 text-xs text-rose-300">Error AI: {err}</div>}
+          {loading && (
+            <div className="glass rounded-2xl p-10 text-center text-sm text-cyan-300 animate-pulse">
+              🤖 Menggabungkan 4 sumber data live untuk IDX:{stock.ticker}...
+            </div>
+          )}
+
+          {report && !loading && (
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                <span className="text-slate-400 font-bold">Sumber Aktif:</span>
+                {(report.sources_used || []).map((src) => (
+                  <span key={src} className="px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 font-semibold">
+                    ✓ {src}
+                  </span>
+                ))}
+                {report.hist_ctx && report.hist_ctx.last_bar_date && (
+                  <span className="px-2.5 py-0.5 rounded-full bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 font-mono">
+                    Bar Terakhir: {report.hist_ctx.last_bar_date}
+                  </span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+                <div className="lg:col-span-8 space-y-4">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div className="glass rounded-xl p-3.5 border-violet-500/30">
+                      <div className="text-[10px] uppercase text-slate-400 font-bold">AI Conviction</div>
+                      <div className="text-2xl font-extrabold font-mono text-violet-300 mt-1">{report.conviction}/100</div>
+                      <div className="text-[11px] text-emerald-300 font-semibold">{stock.signal}</div>
+                    </div>
+                    <div className="glass rounded-xl p-3.5">
+                      <div className="text-[10px] uppercase text-slate-400 font-bold">Horizon Ideal</div>
+                      <div className="text-xs font-bold text-white mt-1.5 leading-snug">{report.horizon}</div>
+                    </div>
+                    <div className="glass rounded-xl p-3.5">
+                      <div className="text-[10px] uppercase text-slate-400 font-bold">Risk : Reward</div>
+                      <div className="text-2xl font-extrabold font-mono text-cyan-300 mt-1">1:{stock.plan.rr}</div>
+                      <div className="text-[11px] text-rose-300">SL {stock.plan.sl_pct}% • TP1 +{stock.plan.tp1_pct}%</div>
+                    </div>
+                    <div className="glass rounded-xl p-3.5">
+                      <div className="text-[10px] uppercase text-slate-400 font-bold">Sentimen Berita</div>
+                      <div className={`text-lg font-extrabold mt-1 ${report.news_sentiment === "Positif" ? "text-emerald-300" : report.news_sentiment === "Negatif" ? "text-rose-300" : "text-slate-300"}`}>
+                        {report.news_sentiment}
+                      </div>
+                      <div className="text-[11px] text-slate-400">{(report.news_items || []).length} artikel</div>
+                    </div>
+                  </div>
+
+                  <div className="glass rounded-2xl p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-bold uppercase text-cyan-300">Ringkasan Riset & Tanya Jawab AI</div>
+                      {report.llm_used && (
+                        <span className="px-2 py-0.5 rounded bg-violet-500/20 text-violet-200 text-[10px] font-mono">
+                          {report.llm_model}
+                        </span>
+                      )}
+                    </div>
+                    <pre className="whitespace-pre-wrap text-xs text-slate-200 leading-relaxed font-sans bg-slate-950/70 rounded-xl p-3.5 border border-slate-800">
+                      {report.qa_answer}
+                    </pre>
+                    <div className="flex flex-wrap gap-1.5">
+                      {quickPrompts.map((qp) => (
+                        <button
+                          key={qp}
+                          onClick={() => { setQuestion(qp); runAnalysis(qp); }}
+                          className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[11px] text-slate-200"
+                        >
+                          {qp}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={question}
+                        onChange={(e) => setQuestion(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && runAnalysis(question)}
+                        placeholder="Tanyakan strategi entry, hold, atau risiko saham ini..."
+                        className="h-9 flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 text-xs text-white"
+                      />
+                      <button
+                        onClick={() => runAnalysis(question)}
+                        className="h-9 px-4 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-xs font-extrabold text-slate-950"
+                      >
+                        Kirim
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="lg:col-span-4 space-y-4">
+                  <div className="glass rounded-2xl p-4 space-y-2.5">
+                    <div className="text-xs font-bold uppercase text-emerald-300">Rencana Trading Terukur</div>
+                    <div className="text-xs font-mono space-y-1.5 text-slate-200">
+                      <div className="flex justify-between"><span>Area Beli:</span><b>{fmtRp(stock.plan.entry_low)} - {fmtRp(stock.plan.entry_high)}</b></div>
+                      <div className="flex justify-between text-rose-300"><span>Stop Loss:</span><b>{fmtRp(stock.plan.stop_loss)} ({stock.plan.sl_pct}%)</b></div>
+                      <div className="flex justify-between text-emerald-300"><span>Target 1:</span><b>{fmtRp(stock.plan.tp1)} (+{stock.plan.tp1_pct}%)</b></div>
+                      <div className="flex justify-between text-cyan-300"><span>Target 2:</span><b>{fmtRp(stock.plan.tp2)} (+{stock.plan.tp2_pct}%)</b></div>
+                    </div>
+                    <p className="text-[11px] text-slate-400 pt-2 border-t border-slate-800">{report.fund_audit}</p>
+                  </div>
+
+                  <div className="glass rounded-2xl p-4 space-y-2">
+                    <div className="text-xs font-bold uppercase text-amber-300">Risiko & Skenario</div>
+                    <ul className="space-y-1.5 text-[11px] text-slate-300 list-disc pl-4">
+                      {(report.risk_flags || []).map((rf, idx) => <li key={idx}>{rf}</li>)}
+                    </ul>
+                    {report.scenarios && (
+                      <div className="pt-2 border-t border-slate-800 space-y-1.5 text-[11px] text-slate-300">
+                        <div><b className="text-emerald-300">Bullish:</b> {report.scenarios.bullish}</div>
+                        <div><b className="text-cyan-300">Base:</b> {report.scenarios.base}</div>
+                        <div><b className="text-rose-300">Bearish:</b> {report.scenarios.bearish}</div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function App() {
+      const [market, setMarket] = useState(null);
+      const [selectedTicker, setSelectedTicker] = useState("BRIS");
+      const [interval, setInterval] = useState("D");
+      const [expanded, setExpanded] = useState(false);
+      const [activeTab, setActiveTab] = useState("ai");
+
+      const loadMarket = async (force = false) => {
+        try {
+          const r = await fetch(`/api/scan?force=${force ? 1 : 0}`);
+          const d = await r.json();
+          if (!d.error) setMarket(d);
+        } catch (_) {}
+      };
+
+      useEffect(() => {
+        loadMarket(false);
+        const id = setInterval(() => loadMarket(false), 20000);
+        return () => clearInterval(id);
+      }, []);
+
+      const stocks = market?.stocks || [];
+      const currentStock = useMemo(
+        () => stocks.find((x) => x.ticker === selectedTicker) || stocks[0] || null,
+        [stocks, selectedTicker]
+      );
+
+      return (
+        <div className="min-h-screen flex flex-col">
+          <TickerTape />
+          <header className="glass sticky top-0 z-20 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <span className="font-extrabold tracking-tight text-white text-base">ALPHA IDX</span>
+              {market?.updated_at && (
+                <span className="text-[11px] font-mono text-slate-400">{market.updated_at}</span>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => setActiveTab("ai")}
+                className={`h-8 px-3 rounded-lg text-xs font-bold ${activeTab === "ai" ? "bg-violet-500 text-white" : "bg-slate-800 text-slate-300"}`}
+              >
+                🤖 AI Analyst
+              </button>
+              <button
+                onClick={() => setActiveTab("chart")}
+                className={`h-8 px-3 rounded-lg text-xs font-bold ${activeTab === "chart" ? "bg-emerald-500 text-slate-950" : "bg-slate-800 text-slate-300"}`}
+              >
+                📈 Chart & Teknikal
+              </button>
+              <button
+                onClick={() => setActiveTab("sectors")}
+                className={`h-8 px-3 rounded-lg text-xs font-bold ${activeTab === "sectors" ? "bg-cyan-500 text-slate-950" : "bg-slate-800 text-slate-300"}`}
+              >
+                🧭 Sektor RRG
+              </button>
+              <button
+                onClick={() => loadMarket(true)}
+                className="h-8 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-emerald-300"
+              >
+                ↻ Scan
+              </button>
+            </div>
+          </header>
+
+          <main className="flex-1 p-4 max-w-[1440px] w-full mx-auto space-y-5">
+            {activeTab === "ai" && (
+              <DeepAiView
+                stock={currentStock}
+                allStocks={stocks}
+                onSelectTicker={(t) => setSelectedTicker(t)}
+                onBackToChart={() => setActiveTab("chart")}
+              />
+            )}
+
+            {activeTab === "chart" && (
+              <div className="space-y-4">
+                <div className="glass rounded-2xl p-3.5 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-400">Emiten:</span>
+                    <select
+                      value={currentStock?.ticker || selectedTicker}
+                      onChange={(e) => setSelectedTicker(e.target.value)}
+                      className="h-8 bg-slate-900 border border-slate-700 rounded-lg px-2.5 text-xs font-mono text-white"
+                    >
+                      {stocks.slice(0, 200).map((s) => (
+                        <option key={s.ticker} value={s.ticker}>{s.ticker} ({fmtRp(s.close)})</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {[["15", "15m"], ["60", "1H"], ["D", "1D"], ["W", "1W"]].map(([iv, lbl]) => (
+                      <button
+                        key={iv}
+                        onClick={() => setInterval(iv)}
+                        className={`h-8 px-2.5 rounded-lg text-xs font-mono font-bold ${interval === iv ? "bg-emerald-500 text-slate-950" : "bg-slate-800 text-slate-300"}`}
+                      >
+                        {lbl}
+                      </button>
+                    ))}
+                    <button
+                      onClick={() => setExpanded(!expanded)}
+                      className="h-8 px-2.5 rounded-lg bg-slate-800 text-xs font-semibold text-slate-200"
+                    >
+                      {expanded ? "Normal" : "Perbesar"}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="glass rounded-2xl overflow-hidden">
+                  <TradingViewChart
+                    ticker={currentStock?.ticker || selectedTicker}
+                    interval={interval}
+                    expanded={expanded}
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <div className="glass rounded-2xl overflow-hidden">
+                    <TradingViewGauge ticker={currentStock?.ticker || selectedTicker} />
+                  </div>
+                  <div className="glass rounded-2xl overflow-hidden">
+                    <TradingViewFinancialsWidget ticker={currentStock?.ticker || selectedTicker} />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeTab === "sectors" && (
+              <SectorRotationView
+                onJumpTicker={(t) => {
+                  setSelectedTicker(t);
+                  setActiveTab("chart");
+                }}
+              />
+            )}
+          </main>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>

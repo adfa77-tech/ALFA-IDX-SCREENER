@@ -8,18 +8,21 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 app = FastAPI()
 
+WIB = timezone(timedelta(hours=7))
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ISSI_REPO_FILE = os.path.join(BASE_DIR, "issi_list.txt")
 ISSI_TMP_FILE = "/tmp/issi_list.txt"
 
-CACHE_TTL = 25
+CACHE_TTL = 10
 PROFILE_TTL = 300
-OHLCV_TTL = 300
+OHLCV_TTL = 30
 NEWS_TTL = 300
 
 _cache = {"timestamp": 0, "data": None}
@@ -124,6 +127,14 @@ SAFE_COLS = [
 ]
 
 
+def _now_wib():
+    return datetime.now(WIB)
+
+
+def _today_wib_str():
+    return _now_wib().strftime("%Y-%m-%d")
+
+
 def load_issi_set():
     s = set(DEFAULT_ISSI)
     for path in (ISSI_TMP_FILE, ISSI_REPO_FILE):
@@ -139,18 +150,30 @@ def load_issi_set():
     return s
 
 
+def _tick_bei(price):
+    if price < 200:
+        return 1
+    if price < 500:
+        return 2
+    if price < 2000:
+        return 5
+    if price < 5000:
+        return 10
+    return 25
+
+
 def round_fraksi_bei(price):
     if price is None or price <= 0:
         return 0
-    tick = 1 if price < 200 else (2 if price < 500 else (5 if price < 2000 else (10 if price < 5000 else 25)))
-    return int(round(price / tick) * tick)
+    tick = _tick_bei(price)
+    return max(1, int(round(price / tick) * tick))
 
 
 def floor_fraksi_bei(price):
     if price is None or price <= 0:
         return 0
-    tick = 1 if price < 200 else (2 if price < 500 else (5 if price < 2000 else (10 if price < 5000 else 25)))
-    return max(50, int(math.floor(price / tick) * tick))
+    tick = _tick_bei(price)
+    return max(1, int(math.floor(price / tick) * tick))
 
 
 def safe_num(val, default=None):
@@ -214,33 +237,6 @@ def translate_to_id(text):
     except Exception:
         pass
 
-    try:
-        sentences = re.split(r"(?<=[.!?])\s+", clean)
-        chunks, cur = [], ""
-        for sent in sentences:
-            if len(cur) + len(sent) + 1 <= 440:
-                cur = (cur + " " + sent).strip()
-            else:
-                if cur:
-                    chunks.append(cur)
-                cur = sent[:440]
-        if cur:
-            chunks.append(cur)
-
-        out_parts = []
-        for ch in chunks[:4]:
-            url = "https://api.mymemory.translated.net/get?" + urllib.parse.urlencode({"q": ch, "langpair": "en|id"})
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=4) as resp:
-                j = json.loads(resp.read().decode("utf-8"))
-            t_txt = (j.get("responseData") or {}).get("translatedText") or ""
-            if t_txt and "MYMEMORY WARNING" not in t_txt.upper():
-                out_parts.append(t_txt)
-        if out_parts:
-            return " ".join(out_parts)
-    except Exception:
-        pass
-
     return _local_phrase_translate(clean)
 
 
@@ -274,7 +270,7 @@ def post_tv_scanner(columns):
     payload = {
         "filter": [
             {"left": "exchange", "operation": "equal", "right": "IDX"},
-            {"left": "close", "operation": "greater", "right": 50},
+            {"left": "close", "operation": "greater", "right": 0},
             {"left": "volume", "operation": "greater", "right": 0},
         ],
         "options": {"lang": "en"},
@@ -314,7 +310,13 @@ def analyze_stock(row_dict, issi_set):
         rvol = volume / avg_vol
     rvol = rvol or 1.0
 
-    val_traded = close * volume
+    close_int = round_fraksi_bei(close)
+    open_int = round_fraksi_bei(open_p)
+    high_int = max(close_int, open_int, round_fraksi_bei(high_p))
+    low_int = min(close_int, open_int, floor_fraksi_bei(low_p))
+    prev_close_int = round_fraksi_bei(close / (1 + change / 100.0)) if abs(change) < 99 else close_int
+
+    val_traded = close_int * volume
     mcap = safe_num(row_dict.get("market_cap_basic"), 0)
 
     rsi = safe_num(row_dict.get("RSI"), 50)
@@ -456,20 +458,20 @@ def analyze_stock(row_dict, issi_set):
 
     alpha_score = max(0, min(100, round(smart_score + trend_score + mom_score + fund_score)))
 
-    risk_unit = max(atr * 1.45, close * 0.03)
+    risk_unit = max(atr * 1.45, close_int * 0.03)
     if is_rebound:
-        entry_low = floor_fraksi_bei(close * 0.985)
-        entry_high = round_fraksi_bei(close * 1.005)
-        sl_raw = min(low_p * 0.98, close - risk_unit)
+        entry_low = floor_fraksi_bei(close_int * 0.985)
+        entry_high = max(entry_low, round_fraksi_bei(close_int * 1.005))
+        sl_raw = min(low_int * 0.98, close_int - risk_unit)
     elif is_breakout:
-        entry_low = floor_fraksi_bei(max(ema20 * 0.99, close * 0.985))
-        entry_high = round_fraksi_bei(close * 1.01)
-        sl_raw = max(ema20 * 0.97, close - risk_unit)
+        entry_low = floor_fraksi_bei(max(ema20 * 0.99, close_int * 0.985))
+        entry_high = max(entry_low, round_fraksi_bei(close_int * 1.01))
+        sl_raw = max(ema20 * 0.97, close_int - risk_unit)
     else:
-        base_sup = min(ema20, vwap) if ema20 > 0 else close * 0.97
-        entry_low = floor_fraksi_bei(max(base_sup, close * 0.97))
-        entry_high = round_fraksi_bei(close)
-        sl_raw = min(piv_s1, close - risk_unit)
+        base_sup = min(ema20, vwap) if ema20 > 0 else close_int * 0.97
+        entry_low = floor_fraksi_bei(max(base_sup, close_int * 0.97))
+        entry_high = max(entry_low, round_fraksi_bei(close_int))
+        sl_raw = min(piv_s1, close_int - risk_unit)
 
     stop_loss = floor_fraksi_bei(min(sl_raw, entry_low * 0.96))
     if stop_loss >= entry_low:
@@ -513,7 +515,11 @@ def analyze_stock(row_dict, issi_set):
         "is_issi": is_issi,
         "in_issi_list": in_issi_list,
         "debt_asset_ratio": debt_asset_ratio,
-        "close": round(close, 0),
+        "open": open_int,
+        "high": high_int,
+        "low": low_int,
+        "close": close_int,
+        "prev_close": prev_close_int,
         "change": round(change, 2),
         "volume": int(volume),
         "value_traded_b": round(val_traded / 1e9, 2),
@@ -559,9 +565,9 @@ def analyze_stock(row_dict, issi_set):
             "tp1": tp1,
             "tp2": tp2,
             "rr": rr_ratio,
-            "sl_pct": round(((stop_loss - entry_high) / entry_high) * 100, 1),
-            "tp1_pct": round(((tp1 - entry_high) / entry_high) * 100, 1),
-            "tp2_pct": round(((tp2 - entry_high) / entry_high) * 100, 1),
+            "sl_pct": round(((stop_loss - entry_high) / entry_high) * 100, 1) if entry_high else 0,
+            "tp1_pct": round(((tp1 - entry_high) / entry_high) * 100, 1) if entry_high else 0,
+            "tp2_pct": round(((tp2 - entry_high) / entry_high) * 100, 1) if entry_high else 0,
             "note": action_note,
         },
     }
@@ -589,11 +595,12 @@ def get_market_data(force=False):
 
     results.sort(key=lambda x: (x["alpha_score"], x["value_traded_b"]), reverse=True)
     payload = {
-        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S WIB", time.gmtime(now + 7 * 3600)),
+        "updated_at": _now_wib().strftime("%Y-%m-%d %H:%M:%S WIB"),
+        "market_date": _today_wib_str(),
         "total_scanned": len(results),
         "total_issi": sum(1 for r in results if r["is_issi"]),
         "strong_buy_count": sum(1 for r in results if r["signal_code"] in ("STRONG_BUY", "BUY_BREAKOUT")),
-        "source": "TradingView Live Scanner (IDX)",
+        "source": "TradingView Live Scanner + Yahoo Finance Sync (IDX)",
         "stocks": results,
     }
     _cache["timestamp"] = now
@@ -601,746 +608,99 @@ def get_market_data(force=False):
     return payload
 
 
-def fetch_yf_ohlcv(ticker, range_str="1y"):
-    key = f"{ticker}:{range_str}"
+def _sync_live_candle_with_market(bars, ticker, live_stock=None):
+    """Memastikan bar terakhir OHLCV selaras dengan harga live TradingView pada hari bursa aktif."""
+    if not bars:
+        bars = []
+
+    if live_stock is None:
+        market = get_market_data(force=False)
+        live_stock = next((x for x in market.get("stocks", []) if x["ticker"] == ticker), None)
+
+    if not live_stock:
+        return bars
+
+    today_str = _today_wib_str()
+    live_bar = {
+        "date": today_str,
+        "open": float(live_stock["open"]),
+        "high": float(live_stock["high"]),
+        "low": float(live_stock["low"]),
+        "close": float(live_stock["close"]),
+        "volume": float(live_stock["volume"]),
+    }
+
+    if not bars:
+        return [live_bar]
+
+    last_bar = bars[-1]
+    if last_bar["date"] == today_str:
+        bars[-1] = {
+            "date": today_str,
+            "open": float(live_stock["open"]) or last_bar["open"],
+            "high": max(last_bar["high"], float(live_stock["high"]), float(live_stock["close"])),
+            "low": min(last_bar["low"], float(live_stock["low"]) or last_bar["low"], float(live_stock["close"])),
+            "close": float(live_stock["close"]),
+            "volume": max(last_bar["volume"], float(live_stock["volume"])),
+        }
+    elif last_bar["date"] < today_str and float(live_stock["close"]) != float(last_bar["close"]):
+        bars.append(live_bar)
+
+    return bars
+
+
+def fetch_yf_ohlcv(ticker, range_str="1y", live_stock=None, force=False):
+    clean_ticker = (ticker or "").upper().replace(".JK", "").strip()
+    key = f"{clean_ticker}:{range_str}"
     now = time.time()
     cached = _ohlcv_cache.get(key)
-    if cached and (now - cached["ts"] < OHLCV_TTL):
-        return cached["bars"]
+    if not force and cached and (now - cached["ts"] < OHLCV_TTL):
+        return _sync_live_candle_with_market(list(cached["bars"]), clean_ticker, live_stock=live_stock)
 
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(ticker)}.JK?range={range_str}&interval=1d"
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(clean_ticker)}.JK?range={urllib.parse.quote(range_str)}&interval=1d"
     req = urllib.request.Request(
         url,
         headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
     )
-    with urllib.request.urlopen(req, timeout=8) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-
-    res = (data.get("chart") or {}).get("result") or []
-    if not res:
-        return []
-    r0 = res[0]
-    ts_list = r0.get("timestamp") or []
-    quote = ((r0.get("indicators") or {}).get("quote") or [{}])[0]
-    opens = quote.get("open") or []
-    highs = quote.get("high") or []
-    lows = quote.get("low") or []
-    closes = quote.get("close") or []
-    vols = quote.get("volume") or []
-
     bars = []
-    for i, ts in enumerate(ts_list):
-        c = closes[i] if i < len(closes) else None
-        o = opens[i] if i < len(opens) else c
-        h = highs[i] if i < len(highs) else c
-        l = lows[i] if i < len(lows) else c
-        v = vols[i] if i < len(vols) else 0
-        if c is None or o is None or h is None or l is None or c <= 0:
-            continue
-        bars.append({
-            "date": time.strftime("%Y-%m-%d", time.gmtime(ts + 7 * 3600)),
-            "open": float(o),
-            "high": float(h),
-            "low": float(l),
-            "close": float(c),
-            "volume": float(v or 0),
-        })
-    _ohlcv_cache[key] = {"ts": now, "bars": bars}
-    return bars
-
-
-def fetch_google_news_id(query_str, limit=8):
-    now = time.time()
-    cached = _news_cache.get(query_str)
-    if cached and (now - cached["ts"] < NEWS_TTL):
-        return cached["items"]
-
-    url = "https://news.google.com/rss/search?" + urllib.parse.urlencode({
-        "q": query_str,
-        "hl": "id",
-        "gl": "ID",
-        "ceid": "ID:id",
-    })
-    items = []
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=7) as resp:
-            xml_bytes = resp.read()
-        root = ET.fromstring(xml_bytes)
-        for item in root.findall("./channel/item")[:limit]:
-            title = (item.findtext("title") or "").strip()
-            link = (item.findtext("link") or "").strip()
-            pub = (item.findtext("pubDate") or "").strip()
-            source_el = item.find("source")
-            source = source_el.text.strip() if (source_el is not None and source_el.text) else "Berita Ekonomi"
-            tl = title.lower()
-            pos_cnt = sum(1 for w in POS_NEWS_WORDS if w in tl)
-            neg_cnt = sum(1 for w in NEG_NEWS_WORDS if w in tl)
-            if pos_cnt > neg_cnt:
-                sent, sent_score = "Positif", pos_cnt - neg_cnt
-            elif neg_cnt > pos_cnt:
-                sent, sent_score = "Negatif", pos_cnt - neg_cnt
-            else:
-                sent, sent_score = "Netral", 0
-            items.append({
-                "title": title,
-                "link": link,
-                "published": pub[:22] if pub else "-",
-                "source": source,
-                "sentiment": sent,
-                "score": sent_score,
-            })
-    except Exception:
-        pass
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
 
-    _news_cache[query_str] = {"ts": now, "items": items}
-    return items
+        res = (data.get("chart") or {}).get("result") or []
+        if res:
+            r0 = res[0]
+            ts_list = r0.get("timestamp") or []
+            quote = ((r0.get("indicators") or {}).get("quote") or [{}])[0]
+            opens = quote.get("open") or []
+            highs = quote.get("high") or []
+            lows = quote.get("low") or []
+            closes = quote.get("close") or []
+            vols = quote.get("volume") or []
 
-
-def _get_yf_auth(force=False):
-    now = time.time()
-    if not force and _yf_auth["opener"] and _yf_auth["crumb"] and (now - _yf_auth["timestamp"] < 1500):
-        return _yf_auth["opener"], _yf_auth["crumb"]
-
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor())
-    opener.addheaders = [
-        ("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"),
-        ("Accept", "application/json,text/html,*/*"),
-    ]
-    try:
-        opener.open("https://fc.yahoo.com", timeout=6).read()
-    except Exception:
-        pass
-    crumb = opener.open("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=6).read().decode("utf-8").strip()
-    _yf_auth["timestamp"] = now
-    _yf_auth["opener"] = opener
-    _yf_auth["crumb"] = crumb
-    return opener, crumb
-
-
-def _fmt_raw(obj, key):
-    val = obj.get(key)
-    if isinstance(val, dict):
-        return val.get("raw"), val.get("fmt")
-    return val, str(val) if val is not None else None
-
-
-def fetch_yahoo_profile(ticker, stock_obj=None):
-    now = time.time()
-    cached = _profile_cache.get(ticker)
-    if cached and (now - cached["ts"] < PROFILE_TTL):
-        return cached["data"]
-
-    modules = ",".join([
-        "assetProfile",
-        "majorHoldersBreakdown",
-        "insiderHolders",
-        "insiderTransactions",
-        "institutionOwnership",
-        "fundOwnership",
-        "netSharePurchaseActivity",
-        "defaultKeyStatistics",
-        "calendarEvents",
-        "summaryDetail",
-    ])
-
-    fallback_summary = ""
-    if stock_obj:
-        fallback_summary = (
-            f"{stock_obj['name']} (kode IDX:{ticker}) adalah emiten tercatat di Bursa Efek Indonesia yang bergerak di sektor "
-            f"{stock_obj['sector']} (sub-industri: {stock_obj['industry']}), dengan kapitalisasi pasar sekitar Rp {stock_obj['mcap_t']} Triliun."
-        )
-
-    result = {
-        "yahoo_ok": False,
-        "yahoo_note": "",
-        "summary": fallback_summary,
-        "website": "",
-        "address": "",
-        "employees": None,
-        "officers": [],
-        "ownership": {
-            "insiders_pct": None,
-            "institutions_pct": None,
-            "public_float_pct": None,
-            "institutions_count": None,
-            "shares_outstanding": None,
-            "shares_outstanding_fmt": "-",
-            "float_shares": None,
-            "float_shares_fmt": "-",
-        },
-        "insider_holders": [],
-        "insider_transactions": [],
-        "net_insider_activity": None,
-        "institutions": [],
-        "funds": [],
-        "calendar": {"ex_dividend": "-", "dividend_date": "-", "earnings_date": "-", "dividend_rate": "-"},
-    }
-
-    try:
-        opener, crumb = _get_yf_auth()
-        url = (
-            f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{ticker}.JK"
-            f"?modules={urllib.parse.quote(modules)}&crumb={urllib.parse.quote(crumb)}"
-        )
-        try:
-            raw_json = opener.open(url, timeout=9).read().decode("utf-8")
-        except urllib.error.HTTPError as he:
-            if he.code in (401, 403):
-                opener, crumb = _get_yf_auth(force=True)
-                url = (
-                    f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{ticker}.JK"
-                    f"?modules={urllib.parse.quote(modules)}&crumb={urllib.parse.quote(crumb)}"
-                )
-                raw_json = opener.open(url, timeout=9).read().decode("utf-8")
-            else:
-                raise
-
-        parsed = json.loads(raw_json)
-        res_list = parsed.get("quoteSummary", {}).get("result") or []
-        if not res_list:
-            result["yahoo_note"] = "Data tambahan Yahoo Finance tidak tersedia untuk emiten ini."
-            return result
-
-        data = res_list[0]
-        result["yahoo_ok"] = True
-
-        ap = data.get("assetProfile") or {}
-        raw_summary = ap.get("longBusinessSummary") or ""
-        result["summary"] = translate_to_id(raw_summary) if raw_summary else fallback_summary
-        result["website"] = ap.get("website") or ""
-        addr_parts = [ap.get("address1"), ap.get("city"), ap.get("country")]
-        result["address"] = ", ".join([p for p in addr_parts if p])
-        result["employees"] = ap.get("fullTimeEmployees")
-        result["officers"] = [
-            {
-                "name": o.get("name") or "-",
-                "title": translate_role(o.get("title") or "-"),
-                "age": o.get("age"),
-            }
-            for o in (ap.get("companyOfficers") or [])[:12]
-        ]
-
-        mhb = data.get("majorHoldersBreakdown") or {}
-        dks = data.get("defaultKeyStatistics") or {}
-        ins_raw, _ = _fmt_raw(mhb, "insidersPercentHeld")
-        if ins_raw is None:
-            ins_raw, _ = _fmt_raw(dks, "heldPercentInsiders")
-        inst_raw, _ = _fmt_raw(mhb, "institutionsPercentHeld")
-        if inst_raw is None:
-            inst_raw, _ = _fmt_raw(dks, "heldPercentInstitutions")
-        inst_cnt, _ = _fmt_raw(mhb, "institutionsCount")
-        sh_out, sh_out_fmt = _fmt_raw(dks, "sharesOutstanding")
-        fl_sh, fl_sh_fmt = _fmt_raw(dks, "floatShares")
-
-        ins_pct = round(ins_raw * 100, 2) if ins_raw is not None else None
-        inst_pct = round(inst_raw * 100, 2) if inst_raw is not None else None
-        pub_pct = round(max(0.0, 100.0 - (ins_pct or 0.0) - (inst_pct or 0.0)), 2) if (ins_pct is not None or inst_pct is not None) else None
-
-        result["ownership"] = {
-            "insiders_pct": ins_pct,
-            "institutions_pct": inst_pct,
-            "public_float_pct": pub_pct,
-            "institutions_count": int(inst_cnt) if inst_cnt is not None else None,
-            "shares_outstanding": sh_out,
-            "shares_outstanding_fmt": sh_out_fmt or "-",
-            "float_shares": fl_sh,
-            "float_shares_fmt": fl_sh_fmt or "-",
-        }
-
-        ih = (data.get("insiderHolders") or {}).get("holders") or []
-        result["insider_holders"] = [
-            {
-                "name": h.get("name") or "-",
-                "relation": translate_role(h.get("relation") or "-"),
-                "action": h.get("transactionDescription") or "-",
-                "date": (h.get("latestTransDate") or {}).get("fmt") or "-",
-                "shares": (h.get("positionDirect") or {}).get("fmt") or "-",
-            }
-            for h in ih[:12]
-        ]
-
-        itx = (data.get("insiderTransactions") or {}).get("transactions") or []
-        result["insider_transactions"] = [
-            {
-                "name": tx.get("filerName") or "-",
-                "relation": translate_role(tx.get("filerRelation") or "-"),
-                "text": (tx.get("transactionText") or "-").replace("Purchase", "Pembelian").replace("Sale", "Penjualan"),
-                "shares": (tx.get("shares") or {}).get("fmt") or "-",
-                "value": (tx.get("value") or {}).get("fmt") or "-",
-                "date": (tx.get("startDate") or {}).get("fmt") or "-",
-                "ownership": tx.get("ownership") or "-",
-            }
-            for tx in itx[:15]
-        ]
-
-        nspa = data.get("netSharePurchaseActivity") or {}
-        if nspa:
-            b_cnt, _ = _fmt_raw(nspa, "buyInfoCount")
-            s_cnt, _ = _fmt_raw(nspa, "sellInfoCount")
-            _, b_sh = _fmt_raw(nspa, "buyInfoShares")
-            _, s_sh = _fmt_raw(nspa, "sellInfoShares")
-            _, n_sh = _fmt_raw(nspa, "netInfoShares")
-            if b_cnt is not None or s_cnt is not None:
-                result["net_insider_activity"] = {
-                    "period": nspa.get("period") or "6m",
-                    "buy_count": b_cnt or 0,
-                    "sell_count": s_cnt or 0,
-                    "buy_shares": b_sh or "0",
-                    "sell_shares": s_sh or "0",
-                    "net_shares": n_sh or "0",
-                }
-
-        io_list = (data.get("institutionOwnership") or {}).get("ownershipList") or []
-        result["institutions"] = [
-            {
-                "name": x.get("organization") or "-",
-                "pct": round(((_fmt_raw(x, "pctHeld")[0] or 0) * 100), 2),
-                "shares": (x.get("position") or {}).get("fmt") or "-",
-                "date": (x.get("reportDate") or {}).get("fmt") or "-",
-            }
-            for x in io_list[:10]
-        ]
-
-        fo_list = (data.get("fundOwnership") or {}).get("ownershipList") or []
-        result["funds"] = [
-            {
-                "name": x.get("organization") or "-",
-                "pct": round(((_fmt_raw(x, "pctHeld")[0] or 0) * 100), 2),
-                "shares": (x.get("position") or {}).get("fmt") or "-",
-                "date": (x.get("reportDate") or {}).get("fmt") or "-",
-            }
-            for x in fo_list[:10]
-        ]
-
-        cal = data.get("calendarEvents") or {}
-        sd = data.get("summaryDetail") or {}
-        ex_div = (cal.get("exDividendDate") or {}).get("fmt") or (sd.get("exDividendDate") or {}).get("fmt") or "-"
-        div_dt = (cal.get("dividendDate") or {}).get("fmt") or "-"
-        earn_list = (cal.get("earnings") or {}).get("earningsDate") or []
-        earn_dt = earn_list[0].get("fmt") if (earn_list and isinstance(earn_list[0], dict)) else "-"
-        _, div_rate_fmt = _fmt_raw(sd, "dividendRate")
-        result["calendar"] = {
-            "ex_dividend": ex_div,
-            "dividend_date": div_dt,
-            "earnings_date": earn_dt,
-            "dividend_rate": div_rate_fmt or "-",
-        }
-
-        _profile_cache[ticker] = {"ts": now, "data": result}
-    except Exception as e:
-        result["yahoo_note"] = f"Feed kepemilikan Yahoo Finance sementara dibatasi ({e}). Sumber data lain tetap aktif."
-
-    return result
-
-
-def compute_historical_context(bars):
-    if not bars or len(bars) < 25:
-        return {
-            "available": False,
-            "ret_1m": None,
-            "ret_3m": None,
-            "ret_6m": None,
-            "acc_days_20": 0,
-            "dist_days_20": 0,
-            "support_20d": None,
-            "resistance_20d": None,
-            "volatility_ann": None,
-        }
-    closes = [b["close"] for b in bars]
-    last = closes[-1]
-    ret_1m = round(((last / closes[-22]) - 1) * 100, 2) if len(closes) >= 22 else None
-    ret_3m = round(((last / closes[-64]) - 1) * 100, 2) if len(closes) >= 64 else None
-    ret_6m = round(((last / closes[0]) - 1) * 100, 2)
-
-    recent_20 = bars[-20:]
-    avg_vol_20 = sum(b["volume"] for b in recent_20) / len(recent_20)
-    acc_days = sum(1 for i in range(1, len(recent_20)) if recent_20[i]["close"] > recent_20[i - 1]["close"] and recent_20[i]["volume"] >= avg_vol_20)
-    dist_days = sum(1 for i in range(1, len(recent_20)) if recent_20[i]["close"] < recent_20[i - 1]["close"] and recent_20[i]["volume"] >= avg_vol_20)
-    sup_20 = round_fraksi_bei(min(b["low"] for b in recent_20))
-    res_20 = round_fraksi_bei(max(b["high"] for b in recent_20))
-
-    rets = [(closes[i] / closes[i - 1]) - 1 for i in range(max(1, len(closes) - 30), len(closes)) if closes[i - 1] > 0]
-    if rets:
-        mean_r = sum(rets) / len(rets)
-        var_r = sum((r - mean_r) ** 2 for r in rets) / len(rets)
-        vol_ann = round(math.sqrt(var_r) * math.sqrt(252) * 100, 1)
-    else:
-        vol_ann = None
-
-    return {
-        "available": True,
-        "ret_1m": ret_1m,
-        "ret_3m": ret_3m,
-        "ret_6m": ret_6m,
-        "acc_days_20": acc_days,
-        "dist_days_20": dist_days,
-        "support_20d": sup_20,
-        "resistance_20d": res_20,
-        "volatility_ann": vol_ann,
-    }
-
-
-def build_quant_ai_report(s, all_stocks, hist_ctx, profile_ctx, news_items, question=""):
-    peers = [x for x in all_stocks if x["sector"] == s["sector"] and x["value_traded_b"] >= 0.5]
-    if not peers:
-        peers = [s]
-    peers_sorted = sorted(peers, key=lambda x: (x["alpha_score"], x["value_traded_b"]), reverse=True)
-    rank = next((i + 1 for i, x in enumerate(peers_sorted) if x["ticker"] == s["ticker"]), 1)
-    avg_sector_score = round(sum(x["alpha_score"] for x in peers) / len(peers), 1)
-    avg_sector_chg = round(sum(x["change"] for x in peers) / len(peers), 2)
-    top_peers = [
-        {
-            "ticker": x["ticker"],
-            "close": x["close"],
-            "change": x["change"],
-            "alpha_score": x["alpha_score"],
-            "signal": x["signal"],
-            "pe": x["pe"],
-            "roe": x["roe"],
-        }
-        for x in peers_sorted if x["ticker"] != s["ticker"]
-    ][:3]
-
-    c, e20, e50, e200 = s["close"], s["ema20"], s["ema50"], s["ema200"]
-    if c > e20 > e50 > e200:
-        if s["rsi"] >= 74:
-            stage = "Stage 3 - Overextended / Rawan Profit Taking"
-            stage_desc = f"Harga sudah jauh di atas EMA20 (Rp {e20:,}) dengan RSI {s['rsi']}. Tren masih naik, tetapi rawan koreksi sehat jangka pendek."
-        else:
-            stage = "Stage 2 - Markup / Uptrend Institusi"
-            stage_desc = f"Formasi sempurna: Harga (Rp {c:,}) > EMA20 ({e20:,}) > EMA50 ({e50:,}) > EMA200 ({e200:,}). Zona terbaik mengikuti tren naik."
-    elif c > e20 and e20 <= e50:
-        stage = "Stage 1 -> 2 - Transisi Akumulasi ke Breakout"
-        stage_desc = f"Harga mulai menembus EMA20 (Rp {e20:,}) dan bersiap membalikkan tren menengah (EMA50 Rp {e50:,})."
-    elif c < e50 and e20 < e50:
-        if s["is_rebound"]:
-            stage = "Stage 4 (Akhir) - Technical Rebound dari Jenuh Jual"
-            stage_desc = f"Tren utama masih di bawah EMA50 (Rp {e50:,}), namun muncul pantulan awal dari oversold (RSI {s['rsi']}). Cocok swing cepat."
-        else:
-            stage = "Stage 4 - Markdown / Downtrend"
-            stage_desc = f"Harga berada di bawah EMA20 ({e20:,}) dan EMA50 ({e50:,}). Tekanan jual masih dominan; tunggu base baru terbentuk."
-    else:
-        stage = "Stage 1 - Konsolidasi / Sideways Base"
-        stage_desc = f"Harga bergerak mendatar di sekitar EMA20-EMA50 (BB Width {s['bbw']}%). Menunggu katalis volume."
-
-    vwap_diff = round(((c - s["vwap"]) / s["vwap"]) * 100, 2) if s["vwap"] else 0
-    hist_flow = ""
-    if hist_ctx.get("available"):
-        hist_flow = (
-            f" Dalam 20 hari bursa terakhir tercatat {hist_ctx['acc_days_20']} hari akumulasi vs "
-            f"{hist_ctx['dist_days_20']} hari distribusi (Return 3Bln: {hist_ctx['ret_3m']}%, 6Bln: {hist_ctx['ret_6m']}%, "
-            f"Support 20D Rp {hist_ctx['support_20d']:,}, Resistance 20D Rp {hist_ctx['resistance_20d']:,})."
-        )
-
-    if s["rvol"] >= 1.8 and c >= s["vwap"]:
-        flow = f"Akumulasi Agresif: Volume hari ini {s['rvol']}x rata-rata 10 hari, harga +{vwap_diff}% di atas VWAP (Rp {s['vwap']:,}).{hist_flow}"
-    elif s["vwma_bull"] and c >= s["vwap"]:
-        flow = f"Aliran Dana Positif: VWMA > SMA20 dan harga di atas VWAP (Rp {s['vwap']:,}).{hist_flow}"
-    elif s["rvol"] >= 1.5 and s["change"] < -1.5:
-        flow = f"Distribusi / Tekanan Jual: Volume tinggi ({s['rvol']}x) disertai penurunan {s['change']}%.{hist_flow}"
-    else:
-        flow = f"Volume Normal ({s['rvol']}x), posisi {vwap_diff:+.2f}% dari VWAP (Rp {s['vwap']:,}).{hist_flow}"
-
-    own = (profile_ctx or {}).get("ownership") or {}
-    own_txt = ""
-    if own.get("insiders_pct") is not None:
-        own_txt = f" Struktur saham: Pengendali/Insider {own['insiders_pct']}%, Institusi {own.get('institutions_pct')}%, Publik {own.get('public_float_pct')}%."
-
-    pe_txt = f"PER {s['pe']}x" if s["pe"] is not None else "PER negatif/N/A"
-    pbv_txt = f"PBV {s['pbv']}x" if s["pbv"] is not None else "PBV N/A"
-    roe_txt = f"ROE {s['roe']}%" if s["roe"] is not None else "ROE N/A"
-    da_txt = f"Utang/Aset {s['debt_asset_ratio']}%" if s["debt_asset_ratio"] is not None else "Utang/Aset N/A"
-    syariah_status = "LOLOS SYARIAH ISSI" if s["is_issi"] else "NON-ISSI / PERLU CEK DES"
-    fund_audit = (
-        f"Status: {syariah_status} ({da_txt} vs batas OJK 45%). Valuasi {pe_txt}, {pbv_txt}, {roe_txt}, Div Yield {s['div_yield']}%.{own_txt}"
-    )
-
-    pos_n = sum(1 for n in news_items if n["sentiment"] == "Positif")
-    neg_n = sum(1 for n in news_items if n["sentiment"] == "Negatif")
-    if news_items:
-        overall_sent = "Positif" if pos_n > neg_n else ("Negatif" if neg_n > pos_n else "Netral")
-        news_summary = f"Sentimen Berita Terkini: {overall_sent} ({pos_n} positif, {neg_n} negatif dari {len(news_items)} berita media ekonomi Indonesia)."
-    else:
-        overall_sent = "Netral"
-        news_summary = "Belum ada lonjakan pemberitaan media besar dalam beberapa hari terakhir (pergerakan murni teknikal/arus dana)."
-
-    risks = []
-    if s["value_traded_b"] < 1.0:
-        risks.append(f"Likuiditas tipis (Rp {s['value_traded_b']} M/hari) - rawan spread lebar.")
-    if s["rsi"] >= 74:
-        risks.append(f"RSI Overbought ({s['rsi']}) - hindari kejar harga di pucuk.")
-    if c < e50:
-        risks.append(f"Masih di bawah EMA50 (Rp {e50:,}) - tren menengah belum sepenuhnya aman.")
-    if hist_ctx.get("volatility_ann") and hist_ctx["volatility_ann"] >= 55:
-        risks.append(f"Volatilitas tahunan tinggi ({hist_ctx['volatility_ann']}%) - wajib perkecil ukuran lot.")
-    if neg_n > pos_n:
-        risks.append("Sentimen berita terbaru cenderung negatif - pantau reaksi pasar terhadap isu terkini.")
-    if s["plan"]["rr"] < 1.5:
-        risks.append(f"Risk:Reward hanya 1:{s['plan']['rr']} - ruang profit terbatas dibanding risiko SL.")
-    if not risks:
-        risks.append("Risiko teknikal, likuiditas, dan sentimen berita relatif terkendali selama disiplin SL.")
-
-    if s["alpha_score"] >= 75 and c > e50:
-        horizon = "Swing Trading (1-4 Minggu) / Trend Following"
-    elif s["is_breakout"] or s["rvol"] >= 1.8:
-        horizon = "Day Trade / Fast Swing (2-7 Hari)"
-    elif s["pe"] is not None and 0 < s["pe"] <= 14 and (s["roe"] or 0) >= 12:
-        horizon = "Position / Value Investing (1-6 Bulan)"
-    else:
-        horizon = "Wait & See / Pantau Support"
-
-    p = s["plan"]
-    scenarios = {
-        "bullish": f"Bertahan di atas Rp {p['entry_high']:,} dengan RVOL >= 1.3x membuka peluang naik ke TP1 Rp {p['tp1']:,} (+{p['tp1_pct']}%) hingga TP2 Rp {p['tp2']:,} (+{p['tp2_pct']}%).",
-        "base": f"Jika koreksi sehat, area antre ideal di Rp {p['entry_low']:,}-{p['entry_high']:,} (dekat Support 20D / VWAP) untuk menjaga R:R 1:{p['rr']}.",
-        "bearish": f"Batal jika jebol Stop Loss Rp {p['stop_loss']:,} ({p['sl_pct']}%). Disiplin Cut Loss untuk menghindari drawdown lebih dalam.",
-    }
-
-    q = (question or "").strip().lower()
-    if not q:
-        qa_answer = (
-            f"Sintesis 4 Sumber untuk IDX:{s['ticker']} ({s['signal']} - Skor {s['alpha_score']}/100, Peringkat #{rank}/{len(peers)} sektor {s['sector']}):\n"
-            f"- Teknikal & Aksi Harga: {stage_desc}\n"
-            f"- Arus Dana & Historis: {flow}\n"
-            f"- Berita & Katalis: {news_summary}\n"
-            f"- Eksekusi: {p['note']}"
-        )
-    elif "hold" in q or "jangka" in q or "menengah" in q or "lama" in q:
-        qa_answer = (
-            f"Analisa Hold Menengah {s['ticker']}: Fase saat ini '{stage}' (Return 6Bln: {hist_ctx.get('ret_6m', '-')}%). "
-            + (f"Struktur Stage-2 dan fundamental ({pe_txt}, {roe_txt}) mendukung untuk di-hold selama harga bertahan di atas EMA50 (Rp {e50:,})."
-               if (c > e50 and (s["roe"] or 0) >= 8)
-               else f"Kurang aman untuk hold pasif jangka panjang karena tren masih di bawah/baru menguji EMA50 (Rp {e50:,}). Gunakan Trailing Stop.")
-        )
-    elif "cut loss" in q or "average" in q or "cicil" in q or "entry" in q or "beli" in q:
-        qa_answer = (
-            f"Strategi Entry & Cut Loss {s['ticker']}: Cicil 50% di Rp {p['entry_low']:,}-{p['entry_high']:,} (Support 20D historis: Rp {hist_ctx.get('support_20d') or p['entry_low']:,}), sisa 50% saat konfirmasi mantul. "
-            f"Wajib Cut Loss jika tutup di bawah Rp {p['stop_loss']:,} ({p['sl_pct']}%)."
-        )
-    elif "sektor" in q or "kompetitor" in q or "banding" in q:
-        peers_txt = ", ".join([f"{x['ticker']} (Skor {x['alpha_score']}, {x['change']:+.2f}%)" for x in top_peers]) or "tidak ada pembanding likuid"
-        qa_answer = f"Di sektor {s['sector']}, {s['ticker']} peringkat #{rank}/{len(peers)} (Skor {s['alpha_score']} vs rata-rata {avg_sector_score}). Kompetitor teratas: {peers_txt}."
-    elif "bandar" in q or "trap" in q or "risiko" in q or "jebakan" in q:
-        qa_answer = f"Cek Jebakan & Risiko {s['ticker']}: {flow} {news_summary} Peringatan: {' '.join(risks)}"
-    else:
-        qa_answer = f"Analisa {s['ticker']} ({s['signal']}): {stage_desc} {flow} {news_summary} Area Beli Rp {p['entry_low']:,}-{p['entry_high']:,}, SL Rp {p['stop_loss']:,}, TP1 Rp {p['tp1']:,}."
-
-    conv_base = s["alpha_score"] * 0.8 + (8 if s["value_traded_b"] >= 5 else 0) + (5 if s["plan"]["rr"] >= 2 else 0)
-    if hist_ctx.get("available") and hist_ctx["acc_days_20"] > hist_ctx["dist_days_20"]:
-        conv_base += 4
-    if pos_n > neg_n:
-        conv_base += 3
-
-    return {
-        "ticker": s["ticker"],
-        "conviction": min(98, max(20, round(conv_base))),
-        "horizon": horizon,
-        "stage": stage,
-        "stage_desc": stage_desc,
-        "order_flow": flow,
-        "fund_audit": fund_audit,
-        "news_summary": news_summary,
-        "news_sentiment": overall_sent,
-        "news_items": news_items[:5],
-        "hist_ctx": hist_ctx,
-        "ownership": own,
-        "calendar": (profile_ctx or {}).get("calendar") or {},
-        "risk_flags": risks,
-        "scenarios": scenarios,
-        "sector_context": {
-            "sector": s["sector"],
-            "rank": rank,
-            "total_peers": len(peers),
-            "avg_score": avg_sector_score,
-            "avg_change": avg_sector_chg,
-            "top_peers": top_peers,
-        },
-        "qa_answer": qa_answer,
-        "sources_used": [
-            "TradingView Live Scanner",
-            "Yahoo Finance 6M OHLCV" if hist_ctx.get("available") else "TradingView Historical",
-            "Yahoo Finance Ownership & Calendar" if (profile_ctx or {}).get("yahoo_ok") else "IDX Syariah Audit",
-            f"Berita Ekonomi ID ({len(news_items)} artikel)",
-        ],
-        "llm_used": False,
-        "llm_error": "",
-    }
-
-
-def call_gemini_ai(s, quant_report, question, api_key):
-    ctx = quant_report["sector_context"]
-    hc = quant_report["hist_ctx"]
-    headlines = [f"- [{n['sentiment']}] {n['title']} ({n['source']})" for n in quant_report["news_items"]]
-    news_block = "\n".join(headlines) if headlines else "- Tidak ada berita terkini yang signifikan."
-    prompt = (
-        f"Kamu adalah Kepala Riset Ekuitas Pasar Modal Indonesia (BEI/IDX). Lakukan analisa mendalam berbasis 4 sumber data berikut untuk IDX:{s['ticker']} ({s['name']}):\n"
-        f"1) TRADINGVIEW LIVE: Harga Rp {s['close']:,} ({s['change']:+.2f}%), Val Rp {s['value_traded_b']}M, RVOL {s['rvol']}x, Alpha {s['alpha_score']}/100 ({s['signal']}), RSI {s['rsi']}, ADX {s['adx']}, VWAP Rp {s['vwap']:,}, EMA20/50/200={s['ema20']:,}/{s['ema50']:,}/{s['ema200']:,}.\n"
-        f"   Sektor {s['sector']} (Peringkat #{ctx['rank']}/{ctx['total_peers']}, rata-rata skor {ctx['avg_score']}). Top Peers: {json.dumps(ctx['top_peers'])}\n"
-        f"2) HISTORIS 6 BULAN: Return 1M={hc.get('ret_1m')}%, 3M={hc.get('ret_3m')}%, 6M={hc.get('ret_6m')}%, Hari Akumulasi vs Distribusi (20D)={hc.get('acc_days_20')} vs {hc.get('dist_days_20')}, Support 20D Rp {hc.get('support_20d')}, Resistance 20D Rp {hc.get('resistance_20d')}, Volatilitas={hc.get('volatility_ann')}%.\n"
-        f"3) FUNDAMENTAL, SYARIAH & KEPEMILIKAN: ISSI={s['is_issi']}, Utang/Aset={s['debt_asset_ratio']}%, PER={s['pe']}x, PBV={s['pbv']}x, ROE={s['roe']}%, DivYield={s['div_yield']}%, Kepemilikan={json.dumps(quant_report['ownership'])}, Kalender={json.dumps(quant_report['calendar'])}.\n"
-        f"4) BERITA MEDIA INDONESIA TERKINI:\n{news_block}\n\n"
-        f"Rencana Kuantitatif: Beli Rp {s['plan']['entry_low']:,}-{s['plan']['entry_high']:,}, SL Rp {s['plan']['stop_loss']:,} ({s['plan']['sl_pct']}%), TP1 Rp {s['plan']['tp1']:,}, TP2 Rp {s['plan']['tp2']:,}, R:R 1:{s['plan']['rr']}.\n"
-        f"Pertanyaan User: {question or 'Berikan riset ekuitas mendalam yang menghubungkan teknikal, jejak akumulasi historis, fundamental/kepemilikan, sentimen berita, skenario jebakan/risiko, dan rencana eksekusi terbaik.'}\n\n"
-        f"Jawab dalam Bahasa Indonesia yang tajam, terstruktur (pakai poin bernomor), menyebut angka konkret, dan objektif terhadap risiko."
-    )
-    payload = json.dumps({
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 1100},
-    }).encode("utf-8")
-
-    last_err = ""
-    for model in ("gemini-3.5-flash-lite", "gemini-3.5-flash"):
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-        req = urllib.request.Request(
-            url,
-            data=payload,
-            headers={"Content-Type": "application/json", "x-goog-api-key": api_key.strip()},
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=18) as resp:
-                res = json.loads(resp.read().decode("utf-8"))
-            text = res["candidates"][0]["content"]["parts"][0]["text"]
-            return text, model, ""
-        except Exception as e:
-            last_err = str(e)
-    return None, "", last_err
-
-
-def run_backtest_sim(bars, strategy="BREAKOUT"):
-    if not bars or len(bars) < 60:
-        return {"error": "Data historis tidak cukup untuk backtest (minimal 60 hari bursa)."}
-
-    closes = [b["close"] for b in bars]
-    vols = [b["volume"] for b in bars]
-
-    ema20, ema50, rsi14, atr14 = [closes[0]], [closes[0]], [50.0] * len(bars), [closes[0] * 0.025] * len(bars)
-    k20, k50 = 2 / 21.0, 2 / 51.0
-    for i in range(1, len(bars)):
-        ema20.append(closes[i] * k20 + ema20[-1] * (1 - k20))
-        ema50.append(closes[i] * k50 + ema50[-1] * (1 - k50))
-
-    gains, losses = [0.0], [0.0]
-    trs = [bars[0]["high"] - bars[0]["low"]]
-    for i in range(1, len(bars)):
-        diff = closes[i] - closes[i - 1]
-        gains.append(max(0.0, diff))
-        losses.append(max(0.0, -diff))
-        tr = max(bars[i]["high"] - bars[i]["low"], abs(bars[i]["high"] - closes[i - 1]), abs(bars[i]["low"] - closes[i - 1]))
-        trs.append(tr)
-
-    for i in range(14, len(bars)):
-        ag = sum(gains[i - 13:i + 1]) / 14.0
-        al = sum(losses[i - 13:i + 1]) / 14.0
-        rsi14[i] = 100.0 if al == 0 else (100.0 - (100.0 / (1.0 + ag / al)))
-        atr14[i] = max(closes[i] * 0.015, sum(trs[i - 13:i + 1]) / 14.0)
-
-    equity = 100.0
-    peak = 100.0
-    max_dd = 0.0
-    in_pos = False
-    entry_p, sl_p, tp_p, entry_dt = 0.0, 0.0, 0.0, ""
-    trades = []
-    curve = []
-    fee_roundtrip = 0.004
-
-    for i in range(52, len(bars)):
-        b = bars[i]
-        avg_v10 = sum(vols[i - 10:i]) / 10.0 if i >= 10 else vols[i]
-        rvol = (b["volume"] / avg_v10) if avg_v10 > 0 else 1.0
-        sma20 = sum(closes[i - 19:i + 1]) / 20.0
-        std20 = math.sqrt(sum((x - sma20) ** 2 for x in closes[i - 19:i + 1]) / 20.0)
-        bb_up = sma20 + 2 * std20
-
-        if not in_pos:
-            sig = False
-            if strategy == "BREAKOUT":
-                sig = b["close"] > ema20[i] and rvol >= 1.3 and b["close"] > b["open"] and (b["close"] >= bb_up * 0.985 or b["close"] > max(closes[i - 10:i]))
-            elif strategy == "TREND":
-                sig = ema20[i] > ema50[i] and b["close"] > ema20[i] and closes[i - 1] <= ema20[i - 1]
-            elif strategy == "REBOUND":
-                sig = 25 <= rsi14[i] <= 42 and rsi14[i] > rsi14[i - 1] and b["close"] > b["open"]
-
-            if sig:
-                in_pos = True
-                entry_p = b["close"]
-                entry_dt = b["date"]
-                sl_p = entry_p - 1.5 * atr14[i]
-                tp_p = entry_p + 2.8 * atr14[i]
-        else:
-            exit_reason = None
-            exit_p = b["close"]
-            if b["low"] <= sl_p:
-                exit_reason = "Stop Loss"
-                exit_p = sl_p
-            elif b["high"] >= tp_p:
-                exit_reason = "Take Profit"
-                exit_p = tp_p
-            elif strategy == "TREND" and b["close"] < ema20[i]:
-                exit_reason = "Cross < EMA20"
-            elif strategy == "REBOUND" and rsi14[i] >= 65:
-                exit_reason = "RSI Target"
-
-            if exit_reason:
-                ret = ((exit_p / entry_p) - 1.0) - fee_roundtrip
-                equity *= (1.0 + ret)
-                trades.append({
-                    "entry_date": entry_dt,
-                    "exit_date": b["date"],
-                    "entry": round_fraksi_bei(entry_p),
-                    "exit": round_fraksi_bei(exit_p),
-                    "return_pct": round(ret * 100, 2),
-                    "reason": exit_reason,
+            for i, ts in enumerate(ts_list):
+                c = closes[i] if i < len(closes) else None
+                o = opens[i] if i < len(opens) else c
+                h = highs[i] if i < len(highs) else c
+                l = lows[i] if i < len(lows) else c
+                v = vols[i] if i < len(vols) else 0
+                if c is None or o is None or h is None or l is None or c <= 0:
+                    continue
+                dt_wib = datetime.fromtimestamp(ts, tz=WIB)
+                bars.append({
+                    "date": dt_wib.strftime("%Y-%m-%d"),
+                    "open": float(round_fraksi_bei(o)),
+                    "high": float(round_fraksi_bei(h)),
+                    "low": float(floor_fraksi_bei(l)),
+                    "close": float(round_fraksi_bei(c)),
+                    "volume": float(v or 0),
                 })
-                in_pos = False
+    except Exception:
+        pass
 
-        mtm_eq = equity * (b["close"] / entry_p) if in_pos else equity
-        peak = max(peak, mtm_eq)
-        dd = ((mtm_eq / peak) - 1.0) * 100.0
-        max_dd = min(max_dd, dd)
-        curve.append({"date": b["date"], "equity": round(mtm_eq, 2)})
-
-    if in_pos:
-        ret = ((closes[-1] / entry_p) - 1.0) - fee_roundtrip
-        equity *= (1.0 + ret)
-        trades.append({
-            "entry_date": entry_dt,
-            "exit_date": bars[-1]["date"],
-            "entry": round_fraksi_bei(entry_p),
-            "exit": round_fraksi_bei(closes[-1]),
-            "return_pct": round(ret * 100, 2),
-            "reason": "Open (Mark-to-Market)",
-        })
-
-    wins = [t["return_pct"] for t in trades if t["return_pct"] > 0]
-    losses_t = [abs(t["return_pct"]) for t in trades if t["return_pct"] <= 0]
-    win_rate = round((len(wins) / len(trades)) * 100, 1) if trades else 0.0
-    pf = round(sum(wins) / sum(losses_t), 2) if sum(losses_t) > 0 else (round(sum(wins), 2) if wins else 0.0)
-    bh_ret = round(((closes[-1] / closes[52]) - 1.0) * 100, 2)
-
-    return {
-        "total_trades": len(trades),
-        "win_rate": win_rate,
-        "total_return_pct": round(equity - 100.0, 2),
-        "buy_hold_pct": bh_ret,
-        "max_drawdown_pct": round(max_dd, 2),
-        "profit_factor": pf,
-        "equity_curve": curve[::max(1, len(curve) // 90)],
-        "trades": list(reversed(trades))[:25],
-    }
-
-
-def _send_telegram_msg(bot_token, chat_id, text):
-    url = f"https://api.telegram.org/bot{bot_token.strip()}/sendMessage"
-    payload = json.dumps({
-        "chat_id": str(chat_id).strip(),
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True,
-    }).encode("utf-8")
-    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    merged = _sync_live_candle_with_market(bars, clean_ticker, live_stock=live_stock)
+    _ohlcv_cache[key] = {"ts": now, "bars": merged}
+    return merged
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1354,7 +714,7 @@ def home():
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "wib_time": _now_wib().strftime("%Y-%m-%d %H:%M:%S WIB")}
 
 
 @app.get("/api/scan")
@@ -1365,289 +725,20 @@ def scan(force: int = 0):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-@app.get("/api/sectors")
-def sectors():
+@app.get("/api/ohlcv")
+def ohlcv(ticker: str = "BRIS", range_str: str = "6mo", force: int = 0):
+    t = (ticker or "BRIS").upper().replace(".JK", "").strip()
+    rng = range_str if range_str in ("1mo", "3mo", "6mo", "1y", "2y") else "6mo"
     try:
-        market = get_market_data(force=False)
-        groups = {}
-        for s in market["stocks"]:
-            if s["value_traded_b"] < 0.2:
-                continue
-            sec = s["sector"]
-            if sec == "-":
-                continue
-            groups.setdefault(sec, []).append(s)
-
-        out = []
-        for sec, items in groups.items():
-            n = len(items)
-            avg_chg = round(sum(x["change"] for x in items) / n, 2)
-            avg_w = round(sum(x["perf_w"] for x in items) / n, 2)
-            avg_1m = round(sum(x["perf_1m"] for x in items) / n, 2)
-            avg_alpha = round(sum(x["alpha_score"] for x in items) / n, 1)
-            avg_rvol = round(sum(x["rvol"] for x in items) / n, 2)
-            tot_val = round(sum(x["value_traded_b"] for x in items), 1)
-            issi_cnt = sum(1 for x in items if x["is_issi"])
-
-            if avg_1m >= 0 and avg_w >= 0:
-                quad = "LEADING"
-            elif avg_1m >= 0 and avg_w < 0:
-                quad = "WEAKENING"
-            elif avg_1m < 0 and avg_w >= 0:
-                quad = "IMPROVING"
-            else:
-                quad = "LAGGING"
-
-            top3 = sorted(items, key=lambda x: (x["alpha_score"], x["value_traded_b"]), reverse=True)[:3]
-            out.append({
-                "sector": sec,
-                "count": n,
-                "issi_count": issi_cnt,
-                "avg_change": avg_chg,
-                "avg_perf_w": avg_w,
-                "avg_perf_1m": avg_1m,
-                "avg_alpha": avg_alpha,
-                "avg_rvol": avg_rvol,
-                "total_val_b": tot_val,
-                "quadrant": quad,
-                "top_stocks": [{"ticker": x["ticker"], "close": x["close"], "change": x["change"], "alpha_score": x["alpha_score"], "is_issi": x["is_issi"]} for x in top3],
-            })
-
-        out.sort(key=lambda x: (x["avg_alpha"], x["total_val_b"]), reverse=True)
-        return {"updated_at": market["updated_at"], "sectors": out}
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@app.get("/api/profile")
-def stock_profile(ticker: str):
-    t = (ticker or "").upper().strip()
-    if not t:
-        return JSONResponse({"error": "Kode saham wajib diisi."}, status_code=400)
-    try:
-        market = get_market_data(force=False)
-        stock = next((x for x in market["stocks"] if x["ticker"] == t), None)
-        yf = fetch_yahoo_profile(t, stock_obj=stock)
-        return {"ticker": t, "market": stock, "profile": yf}
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@app.get("/api/news")
-def stock_news(ticker: str = "IHSG"):
-    t = (ticker or "IHSG").upper().strip()
-    try:
-        market = get_market_data(force=False)
-        stock = next((x for x in market["stocks"] if x["ticker"] == t), None)
-        q = "IHSG pasar saham Indonesia BEI" if t in ("IHSG", "ALL", "") else f"saham {t} BEI Indonesia"
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
-            f_news = ex.submit(fetch_google_news_id, q, 10)
-            f_prof = ex.submit(fetch_yahoo_profile, t, stock) if (stock and t not in ("IHSG", "ALL")) else None
-            news_items = f_news.result()
-            prof = f_prof.result() if f_prof else {}
-
-        pos = sum(1 for n in news_items if n["sentiment"] == "Positif")
-        neg = sum(1 for n in news_items if n["sentiment"] == "Negatif")
-        net = sum(1 for n in news_items if n["sentiment"] == "Netral")
-
-        div_hunters = sorted(
-            [x for x in market["stocks"] if x["div_yield"] >= 3.0 and x["value_traded_b"] >= 0.5],
-            key=lambda x: x["div_yield"],
-            reverse=True,
-        )[:15]
-
+        market = get_market_data(force=(force == 1))
+        live_stock = next((x for x in market.get("stocks", []) if x["ticker"] == t), None)
+        bars = fetch_yf_ohlcv(t, range_str=rng, live_stock=live_stock, force=(force == 1))
         return {
             "ticker": t,
-            "news": news_items,
-            "sentiment_stats": {"positif": pos, "negatif": neg, "netral": net},
-            "calendar": prof.get("calendar") if prof else {},
-            "div_hunters": [
-                {"ticker": x["ticker"], "name": x["name"], "close": x["close"], "div_yield": x["div_yield"], "is_issi": x["is_issi"], "alpha_score": x["alpha_score"], "pe": x["pe"]}
-                for x in div_hunters
-            ],
+            "range": rng,
+            "updated_at": market.get("updated_at"),
+            "live_price": live_stock["close"] if live_stock else None,
+            "bars": bars,
         }
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@app.get("/api/compare")
-def compare_stocks(tickers: str = "BRIS,TLKM,ADRO"):
-    t_list = [t.strip().upper() for t in tickers.split(",") if t.strip()][:3]
-    if not t_list:
-        return JSONResponse({"error": "Minimal pilih 1 saham."}, status_code=400)
-    try:
-        market = get_market_data(force=False)
-        by_ticker = {x["ticker"]: x for x in market["stocks"]}
-        items = [by_ticker[t] for t in t_list if t in by_ticker]
-
-        series = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
-            futs = {t: ex.submit(fetch_yf_ohlcv, t, "6mo") for t in t_list}
-            for t, fut in futs.items():
-                try:
-                    bars = fut.result()
-                    if bars:
-                        base = bars[0]["close"]
-                        series[t] = [{"date": b["date"], "idx": round((b["close"] / base) * 100, 2), "close": round(b["close"], 0)} for b in bars[::max(1, len(bars) // 70)]]
-                    else:
-                        series[t] = []
-                except Exception:
-                    series[t] = []
-
-        return {"tickers": t_list, "stocks": items, "series": series}
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@app.get("/api/backtest")
-def backtest(ticker: str = "BRIS", strategy: str = "BREAKOUT", range_str: str = "1y"):
-    t = (ticker or "BRIS").upper().strip()
-    strat = (strategy or "BREAKOUT").upper().strip()
-    rng = range_str if range_str in ("6mo", "1y", "2y") else "1y"
-    try:
-        bars = fetch_yf_ohlcv(t, rng)
-        sim = run_backtest_sim(bars, strat)
-        if "error" in sim:
-            return JSONResponse(sim, status_code=400)
-        return {"ticker": t, "strategy": strat, "range": rng, **sim}
-    except Exception as e:
-        return JSONResponse({"error": f"Gagal ambil data historis {t}: {e}"}, status_code=500)
-
-
-@app.post("/api/ai-analyze")
-async def ai_analyze(request: Request):
-    try:
-        body = await request.json()
-        ticker = (body.get("ticker") or "").upper().strip()
-        question = body.get("question") or ""
-        user_key = (body.get("api_key") or "").strip()
-        api_key = user_key or os.environ.get("GEMINI_API_KEY", "").strip()
-
-        market = get_market_data(force=False)
-        stocks = market["stocks"]
-        s = next((x for x in stocks if x["ticker"] == ticker), None)
-        if not s:
-            return JSONResponse({"error": f"Saham {ticker} tidak ditemukan."}, status_code=404)
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
-            f_ohlcv = ex.submit(fetch_yf_ohlcv, ticker, "6mo")
-            f_prof = ex.submit(fetch_yahoo_profile, ticker, s)
-            f_news = ex.submit(fetch_google_news_id, f"saham {ticker} BEI", 6)
-
-            try:
-                hist_ctx = compute_historical_context(f_ohlcv.result())
-            except Exception:
-                hist_ctx = {"available": False}
-            try:
-                prof_ctx = f_prof.result()
-            except Exception:
-                prof_ctx = {}
-            try:
-                news_items = f_news.result()
-            except Exception:
-                news_items = []
-
-        report = build_quant_ai_report(s, stocks, hist_ctx, prof_ctx, news_items, question)
-        if api_key:
-            llm_text, model_used, llm_err = call_gemini_ai(s, report, question, api_key)
-            if llm_text:
-                report["qa_answer"] = llm_text
-                report["llm_used"] = True
-                report["llm_model"] = model_used
-            else:
-                report["llm_error"] = f"Gemini fallback ke Quant AI ({llm_err})"
-        return report
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@app.post("/api/telegram-send")
-async def telegram_send(request: Request):
-    try:
-        body = await request.json()
-        token = (body.get("bot_token") or os.environ.get("TELEGRAM_BOT_TOKEN", "")).strip()
-        chat_id = (body.get("chat_id") or os.environ.get("TELEGRAM_CHAT_ID", "")).strip()
-        only_issi = bool(body.get("only_issi", True))
-        min_score = int(body.get("min_score", 70))
-        if not token or not chat_id:
-            return JSONResponse({"error": "Bot Token dan Chat ID Telegram wajib diisi."}, status_code=400)
-
-        market = get_market_data(force=True)
-        picks = [
-            x for x in market["stocks"]
-            if (not only_issi or x["is_issi"])
-            and x["value_traded_b"] >= 1.0
-            and x["alpha_score"] >= min_score
-            and x["signal_code"] in ("STRONG_BUY", "BUY_BREAKOUT", "BOW")
-        ][:8]
-
-        if not picks:
-            msg = f"<b>ALPHA IDX ALERT</b> ({market['updated_at']})\nBelum ada sinyal di atas Skor {min_score} saat ini."
-        else:
-            lines = [f"<b>ALPHA IDX SNIPER ALERT</b>\n{market['updated_at']}\nFilter: {'ISSI Syariah' if only_issi else 'Semua IHSG'} - Skor >= {min_score}\n"]
-            for x in picks:
-                p = x["plan"]
-                lines.append(
-                    f"- <b>{x['ticker']}</b> ({x['signal']} - Skor {x['alpha_score']})\n"
-                    f"  Harga: Rp {int(x['close']):,} ({x['change']:+.2f}%) | RVOL {x['rvol']}x\n"
-                    f"  Beli: {p['entry_low']:,}-{p['entry_high']:,} | SL: {p['stop_loss']:,} | TP1: {p['tp1']:,}"
-                )
-            msg = "\n".join(lines)
-
-        res = _send_telegram_msg(token, chat_id, msg)
-        if not res.get("ok"):
-            return JSONResponse({"error": res.get("description", "Gagal kirim ke Telegram")}, status_code=400)
-        return {"sent": True, "count": len(picks), "preview": msg}
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@app.get("/api/telegram-cron")
-def telegram_cron(only_issi: int = 1, min_score: int = 74):
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-    if not token or not chat_id:
-        return JSONResponse({"error": "Set TELEGRAM_BOT_TOKEN & TELEGRAM_CHAT_ID di Vercel Environment Variables."}, status_code=400)
-    try:
-        market = get_market_data(force=True)
-        picks = [
-            x for x in market["stocks"]
-            if (only_issi == 0 or x["is_issi"])
-            and x["value_traded_b"] >= 1.0
-            and x["alpha_score"] >= min_score
-            and x["signal_code"] in ("STRONG_BUY", "BUY_BREAKOUT")
-        ][:6]
-        if not picks:
-            return {"sent": False, "reason": "Tidak ada sinyal baru yang memenuhi syarat."}
-        lines = [f"<b>ALPHA IDX AUTO-ALERT</b> ({market['updated_at']})\n"]
-        for x in picks:
-            p = x["plan"]
-            lines.append(f"- <b>{x['ticker']}</b> Skor {x['alpha_score']} | Beli {p['entry_low']:,}-{p['entry_high']:,} | SL {p['stop_loss']:,} | TP1 {p['tp1']:,}")
-        _send_telegram_msg(token, chat_id, "\n".join(lines))
-        return {"sent": True, "count": len(picks)}
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@app.get("/api/issi")
-def get_issi():
-    return {"tickers": sorted(load_issi_set())}
-
-
-@app.post("/api/issi")
-async def save_issi(request: Request):
-    body = await request.json()
-    raw_text = body.get("text", "")
-    tokens = [t.strip().upper().replace("IDX:", "") for t in raw_text.replace(",", "\n").splitlines()]
-    valid = sorted({t for t in tokens if 3 <= len(t) <= 5 and t.isalpha()})
-    if not valid:
-        return JSONResponse({"error": "Tidak ada kode saham valid."}, status_code=400)
-    try:
-        with open(ISSI_REPO_FILE, "w", encoding="utf-8") as f:
-            f.write("\n".join(valid))
-    except Exception:
-        with open(ISSI_TMP_FILE, "w", encoding="utf-8") as f:
-            f.write("\n".join(valid))
-    _cache["data"] = None
-    return {"saved": len(valid)}
